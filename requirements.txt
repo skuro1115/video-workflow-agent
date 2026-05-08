@@ -1,0 +1,11 @@
+# Runtime deps for the MVP pipeline.
+#
+# The current pipeline shells out to `ffmpeg` and `ffprobe`, so no Python
+# packages are strictly required. The libraries below are *planned* for
+# upcoming detectors / features — uncomment as they are wired in.
+
+# scenedetect>=0.6        # shot/scene-change based hotspot detection
+# faster-whisper>=1.0     # transcript-based hotspot scoring
+# openai>=1.40            # LLM-rated highlight selection
+# moviepy>=1.0            # in-process editing if shelling out is not enough
+# pydantic>=2.0           # if config grows beyond dataclasses

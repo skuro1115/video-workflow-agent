@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Pipeline outputs — keep dirs, ignore contents.
+output/*
+!output/.gitkeep
+samples/*
+!samples/.gitkeep
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
