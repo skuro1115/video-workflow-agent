@@ -107,6 +107,24 @@ ffmpeg -y -f lavfi -i testsrc=duration=120:size=320x240:rate=30 \
 python -m unittest discover -s tests
 ```
 
+### 検出結果の評価
+
+正解 JSON ([samples/varying.expected.json](samples/varying.expected.json) 形式) があれば、検出結果との一致度を機械的に測れます。
+
+```bash
+# 1. パイプラインを回す
+python -m src.main --input samples/varying.mp4 --output output/ \
+    --detector audio_rms --candidates 3 --window 10
+
+# 2. 候補が「正解ピーク」を捉えているか採点
+python -m scripts.eval \
+    --hotspots output/hotspot_candidates.json \
+    --expected samples/varying.expected.json \
+    --out output/eval_result.json
+```
+
+`hit_rate`（期待ピークの検出率）と `precision`（候補の的中率）を出します。検出器のチューニング前後で同じ数値を比較できるので、改善が定量的に見えるようになります。
+
 ### 出力ファイル
 
 `output/` 以下に以下が生成されます。
