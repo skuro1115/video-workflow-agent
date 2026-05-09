@@ -365,6 +365,101 @@ class CompositeDetectorTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertIn("good", result[0].reason)
 
+    def test_unknown_fusion_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            CompositeDetector([], count=1, window_seconds=10.0, fusion="bogus")
+
+
+class CompositeDetectorRrfTests(unittest.TestCase):
+    """RRF fusion: ranks, not scores, drive the combined ordering."""
+
+    class _FakeDetector(EvenSamplingDetector):
+        def __init__(self, fixed):
+            self._fixed = fixed
+        def detect(self, *, input_path, duration, debug_dir=None):
+            return list(self._fixed)
+
+    def _make(self, weights_and_cands):
+        from src.hotspot_detector import HotspotCandidate
+        sub = []
+        for name, weight, cands in weights_and_cands:
+            cand_objs = [HotspotCandidate(*c) for c in cands]
+            sub.append(SubDetectorSpec(
+                name=name,
+                detector=self._FakeDetector(cand_objs),
+                weight=weight,
+            ))
+        return sub
+
+    def test_outlier_score_does_not_dominate(self) -> None:
+        # weighted_sum would let the outlier (score=100) at t=10 sweep, but
+        # RRF only cares about rank, so an agreement region (t=60) where
+        # both detectors rank a candidate first should win.
+        sub = self._make([
+            ("d1", 1.0, [
+                (10.0, 30.0, 100.0, "outlier"),
+                (50.0, 70.0, 1.0, "agree"),
+            ]),
+            ("d2", 1.0, [
+                (50.0, 70.0, 1.0, "agree"),
+                (90.0, 100.0, 0.5, "noise"),
+            ]),
+        ])
+        det = CompositeDetector(
+            sub, count=2, window_seconds=15.0, bin_seconds=1.0,
+            fusion="rrf", rrf_k=60,
+        )
+        result = det.detect(input_path=Path("x"), duration=120.0)
+        self.assertGreater(len(result), 0)
+        top = max(result, key=lambda c: c.score)
+        # Top pick should be in the agreement zone (50-70), not the outlier (10-30).
+        center = (top.start + top.end) / 2
+        self.assertGreater(center, 40.0)
+        self.assertLess(center, 80.0)
+        self.assertIn("rrf", top.reason)
+        self.assertIn("rank=", top.reason)
+
+    def test_reason_shows_ranks(self) -> None:
+        sub = self._make([
+            ("d1", 1.0, [(50.0, 70.0, 1.0, "x"), (10.0, 30.0, 0.5, "y")]),
+            ("d2", 1.0, [(50.0, 70.0, 1.0, "x")]),
+        ])
+        det = CompositeDetector(
+            sub, count=1, window_seconds=15.0, bin_seconds=1.0, fusion="rrf",
+        )
+        result = det.detect(input_path=Path("x"), duration=120.0)
+        self.assertEqual(len(result), 1)
+        # Best detectors rank this region #1 → reason should say rank=1
+        self.assertIn("rank=1", result[0].reason)
+
+    def test_zero_weight_excluded_in_rrf(self) -> None:
+        sub = self._make([
+            ("d1", 1.0, [(50.0, 70.0, 1.0, "x")]),
+            ("d2", 0.0, [(0.0, 10.0, 1.0, "y")]),
+        ])
+        det = CompositeDetector(
+            sub, count=3, window_seconds=15.0, bin_seconds=1.0, fusion="rrf",
+        )
+        result = det.detect(input_path=Path("x"), duration=120.0)
+        for c in result:
+            self.assertNotIn("d2", c.reason)
+            mid = (c.start + c.end) / 2
+            self.assertGreater(mid, 30.0)
+
+    def test_score_normalised_to_unit_interval(self) -> None:
+        # All three detectors agree on a single peak, ranked #1 from each.
+        # Combined score should be ~1.0 (max possible).
+        sub = self._make([
+            (f"d{i}", 1.0, [(50.0, 60.0, 1.0, "agree")])
+            for i in range(3)
+        ])
+        det = CompositeDetector(
+            sub, count=1, window_seconds=10.0, bin_seconds=1.0, fusion="rrf",
+        )
+        result = det.detect(input_path=Path("x"), duration=120.0)
+        self.assertEqual(len(result), 1)
+        self.assertAlmostEqual(result[0].score, 1.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()

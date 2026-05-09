@@ -18,7 +18,9 @@ JSON schema (extensible — unknown keys are ignored):
         {"name": "comment_density", "weight": 2.0}
       ],
       "bin_seconds": 1.0,
-      "min_score":   0.0
+      "min_score":   0.0,
+      "fusion":      "weighted_sum",   # or "rrf"
+      "rrf_k":       60                # damping; only used when fusion='rrf'
     }
 """
 from __future__ import annotations
@@ -35,11 +37,16 @@ class DetectorWeight:
     weight: float
 
 
+FUSION_MODES: tuple[str, ...] = ("weighted_sum", "rrf")
+
+
 @dataclass
 class Weights:
     detectors: list[DetectorWeight] = field(default_factory=list)
     bin_seconds: float = 1.0
     min_score: float = 0.0
+    fusion: str = "weighted_sum"   # one of FUSION_MODES
+    rrf_k: int = 60                # RRF damping constant; only used when fusion='rrf'
 
     def enabled(self) -> list[DetectorWeight]:
         """Detectors with weight > 0, in declared order."""
@@ -53,6 +60,8 @@ class Weights:
             "detectors": [asdict(d) for d in self.detectors],
             "bin_seconds": self.bin_seconds,
             "min_score": self.min_score,
+            "fusion": self.fusion,
+            "rrf_k": self.rrf_k,
         }
 
 
@@ -107,7 +116,25 @@ def load_weights(path: Path) -> Weights:
     except (TypeError, ValueError) as e:
         raise WeightsConfigError(f"{path}: bin_seconds / min_score must be numbers") from e
 
-    return Weights(detectors=detectors, bin_seconds=bin_seconds, min_score=min_score)
+    fusion = str(raw.get("fusion", "weighted_sum"))
+    if fusion not in FUSION_MODES:
+        raise WeightsConfigError(
+            f"{path}: 'fusion' must be one of {FUSION_MODES}, got {fusion!r}"
+        )
+    try:
+        rrf_k = int(raw.get("rrf_k", 60))
+    except (TypeError, ValueError) as e:
+        raise WeightsConfigError(f"{path}: rrf_k must be an integer") from e
+    if rrf_k < 1:
+        raise WeightsConfigError(f"{path}: rrf_k must be >= 1, got {rrf_k}")
+
+    return Weights(
+        detectors=detectors,
+        bin_seconds=bin_seconds,
+        min_score=min_score,
+        fusion=fusion,
+        rrf_k=rrf_k,
+    )
 
 
 def save_weights(path: Path, weights: Weights) -> None:
@@ -139,6 +166,8 @@ def interactive_weights(
         seed = {d.name: d.weight for d in defaults.detectors}
     seed_bin = defaults.bin_seconds if defaults else 1.0
     seed_min = defaults.min_score if defaults else 0.0
+    seed_fusion = defaults.fusion if defaults else "weighted_sum"
+    seed_rrf_k = defaults.rrf_k if defaults else 60
 
     print("[Composite detector weights]", file=out_stream)
     print(
@@ -184,7 +213,36 @@ def interactive_weights(
     bin_seconds = _read_float("bin_seconds", seed_bin)
     min_score = _read_float("min_score", seed_min)
 
-    return Weights(detectors=chosen, bin_seconds=bin_seconds, min_score=min_score)
+    out_stream.write(
+        f"  fusion             (weighted_sum/rrf, default {seed_fusion}): "
+    )
+    out_stream.flush()
+    fusion_line = in_stream.readline().strip().lower()
+    if not fusion_line:
+        fusion = seed_fusion
+    elif fusion_line in FUSION_MODES:
+        fusion = fusion_line
+    else:
+        print(
+            f"  ! '{fusion_line}' is not a valid fusion — using default {seed_fusion}",
+            file=out_stream,
+        )
+        fusion = seed_fusion
+
+    rrf_k = seed_rrf_k
+    if fusion == "rrf":
+        rrf_k = int(_read_float("rrf_k", float(seed_rrf_k)))
+        if rrf_k < 1:
+            print(f"  ! rrf_k must be >= 1 — using default {seed_rrf_k}", file=out_stream)
+            rrf_k = seed_rrf_k
+
+    return Weights(
+        detectors=chosen,
+        bin_seconds=bin_seconds,
+        min_score=min_score,
+        fusion=fusion,
+        rrf_k=rrf_k,
+    )
 
 
 def maybe_save_interactive(weights: Weights, *, in_stream=None, out_stream=None) -> Path | None:

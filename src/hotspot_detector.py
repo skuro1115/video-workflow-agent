@@ -406,18 +406,27 @@ class SubDetectorSpec:
 class CompositeDetector(HotspotDetector):
     """Run multiple sub-detectors and combine their scores into a single ranking.
 
-    Algorithm:
+    Two fusion modes are available:
 
-    1. Run each sub-detector independently. (Failures are logged and skipped.)
-    2. Min-max normalise each detector's scores to [0, 1] within this video.
-    3. Project each candidate's normalised score onto a per-bin score array
-       (every bin within the candidate's [start, end] gets the value).
-    4. Combined per-bin score = ``sum(w_i * normalised_i) / sum(w_i)``.
-    5. Greedy NMS top-K over bins, with picks separated by ``window_seconds``.
-    6. Apply ``min_score`` threshold.
+    * ``weighted_sum`` (default) — min-max normalise each detector's scores to
+      [0, 1] within this video, project each candidate's normalised score onto
+      a per-bin score array, and take ``sum(w_i * normalised_i) / sum(w_i)``.
+      Intuitive but easily skewed by an outlier candidate.
 
-    Reason strings cite which sub-detectors contributed and at what weight, so a
-    human reviewer can see why each clip was picked.
+    * ``rrf`` (Reciprocal Rank Fusion) — for each detector, rank its candidates
+      by score descending (rank 1 = best). Each bin a candidate covers inherits
+      that detector's rank. Bin score is
+      ``sum_i (w_i / (rrf_k + rank_i)) / max_possible``.
+      RRF discards score magnitudes and uses only the relative ordering, so
+      one outlier candidate can't drown out the others.
+
+    Common post-processing for both modes:
+
+    1. Greedy NMS top-K over bins, picks separated by ``window_seconds``
+    2. Apply ``min_score`` threshold
+    3. Reason strings cite contributing detectors so reviewers can see why
+       each clip was picked. ``weighted_sum`` shows weighted scores;
+       ``rrf`` shows ranks.
     """
 
     def __init__(
@@ -428,12 +437,20 @@ class CompositeDetector(HotspotDetector):
         window_seconds: float,
         bin_seconds: float = 1.0,
         min_score: float = 0.0,
+        fusion: str = "weighted_sum",
+        rrf_k: int = 60,
     ) -> None:
+        if fusion not in ("weighted_sum", "rrf"):
+            raise ValueError(
+                f"unknown fusion mode {fusion!r}; expected 'weighted_sum' or 'rrf'"
+            )
         self.sub_detectors = sub_detectors
         self.count = max(1, count)
         self.window_seconds = max(1.0, window_seconds)
         self.bin_seconds = max(0.1, bin_seconds)
         self.min_score = max(0.0, min_score)
+        self.fusion = fusion
+        self.rrf_k = max(1, rrf_k)
 
     def detect(
         self,
@@ -452,11 +469,14 @@ class CompositeDetector(HotspotDetector):
         n_bins = max(1, int(math.ceil(duration / self.bin_seconds)))
         combined = [0.0] * n_bins
         # Track per-bin contributing detectors so reasons can cite them.
+        # For weighted_sum: value is weight*norm. For rrf: value is rank (int).
         contributors: list[dict[str, float]] = [dict() for _ in range(n_bins)]
-        total_weight = sum(s.weight for s in active)
 
         per_detector_dump: dict[str, list[dict]] = {}
 
+        # First pass: run all detectors, collecting candidates per active spec.
+        # Keep them around so the second pass can do whichever fusion is wired.
+        per_detector_cands: list[tuple[SubDetectorSpec, list[HotspotCandidate]]] = []
         for spec in active:
             try:
                 cands = spec.detector.detect(
@@ -470,42 +490,80 @@ class CompositeDetector(HotspotDetector):
                     file=sys.stderr,
                 )
                 continue
-
             per_detector_dump[spec.name] = [c.to_dict() for c in cands]
-            if not cands:
-                continue
+            if cands:
+                per_detector_cands.append((spec, cands))
 
-            scores = [c.score for c in cands]
-            s_min = min(scores)
-            s_max = max(scores)
-            # Edge case: if every candidate from this detector has the same
-            # score (including the single-candidate case), min-max would
-            # produce 0 for all of them and the detector would contribute
-            # nothing. Treat them all as equally maximal instead.
-            equal_scores = s_max <= s_min
-            s_range = 1.0 if equal_scores else (s_max - s_min)
-
-            for c in cands:
-                norm = 1.0 if equal_scores else (c.score - s_min) / s_range
-                start_bin = max(0, int(c.start / self.bin_seconds))
-                end_bin = min(n_bins, int(math.ceil(c.end / self.bin_seconds)))
-                for b in range(start_bin, end_bin):
-                    combined[b] += spec.weight * norm
-                    contributors[b][spec.name] = (
-                        contributors[b].get(spec.name, 0.0) + spec.weight * norm
-                    )
-
-        # Normalise by total weight so combined ∈ [0, 1].
-        for i in range(n_bins):
-            combined[i] /= total_weight
+        if self.fusion == "rrf":
+            # RRF: rank candidates per detector, project ranks onto bins,
+            # then combine via sum_i (w_i / (k + rank_i)) and normalise so
+            # the theoretical maximum (every detector ranks bin #1) -> 1.0.
+            best_inv = 1.0 / (self.rrf_k + 1)
+            max_possible = sum(spec.weight for spec, _ in per_detector_cands) * best_inv
+            for spec, cands in per_detector_cands:
+                # Rank by score desc; ties get the same dense rank so neither
+                # candidate drops out.
+                sorted_cands = sorted(cands, key=lambda c: c.score, reverse=True)
+                # Per-bin best (lowest) rank from this detector — a bin that
+                # gets covered by multiple candidates from the same detector
+                # should take the best one.
+                best_rank: dict[int, int] = {}
+                for rank0, c in enumerate(sorted_cands):
+                    rank = rank0 + 1
+                    start_bin = max(0, int(c.start / self.bin_seconds))
+                    end_bin = min(n_bins, int(math.ceil(c.end / self.bin_seconds)))
+                    for b in range(start_bin, end_bin):
+                        prev = best_rank.get(b)
+                        if prev is None or rank < prev:
+                            best_rank[b] = rank
+                for b, rank in best_rank.items():
+                    contribution = spec.weight / (self.rrf_k + rank)
+                    combined[b] += contribution
+                    # Store rank (so reason can show "audio_rms@rank=2").
+                    contributors[b][spec.name] = float(rank)
+            if max_possible > 0:
+                for i in range(n_bins):
+                    combined[i] /= max_possible
+        else:
+            # weighted_sum: project min-max-normalised scores onto bins.
+            total_weight = sum(spec.weight for spec, _ in per_detector_cands)
+            for spec, cands in per_detector_cands:
+                scores = [c.score for c in cands]
+                s_min = min(scores)
+                s_max = max(scores)
+                # Edge case: if every candidate from this detector has the same
+                # score (including the single-candidate case), min-max would
+                # produce 0 for all of them and the detector would contribute
+                # nothing. Treat them all as equally maximal instead.
+                equal_scores = s_max <= s_min
+                s_range = 1.0 if equal_scores else (s_max - s_min)
+                for c in cands:
+                    norm = 1.0 if equal_scores else (c.score - s_min) / s_range
+                    start_bin = max(0, int(c.start / self.bin_seconds))
+                    end_bin = min(n_bins, int(math.ceil(c.end / self.bin_seconds)))
+                    for b in range(start_bin, end_bin):
+                        combined[b] += spec.weight * norm
+                        contributors[b][spec.name] = (
+                            contributors[b].get(spec.name, 0.0) + spec.weight * norm
+                        )
+            # Normalise by total weight so combined ∈ [0, 1].
+            if total_weight > 0:
+                for i in range(n_bins):
+                    combined[i] /= total_weight
 
         if debug_dir is not None:
             debug_dir.mkdir(parents=True, exist_ok=True)
             (debug_dir / "composite_combined.json").write_text(
                 json.dumps(
-                    [{"t": round(i * self.bin_seconds, 3),
-                      "score": round(combined[i], 4)}
-                     for i in range(n_bins)],
+                    {
+                        "fusion": self.fusion,
+                        "rrf_k": self.rrf_k if self.fusion == "rrf" else None,
+                        "bins": [
+                            {"t": round(i * self.bin_seconds, 3),
+                             "score": round(combined[i], 4)}
+                            for i in range(n_bins)
+                        ],
+                    },
                     indent=2,
                 ),
                 encoding="utf-8",
@@ -542,10 +600,17 @@ class CompositeDetector(HotspotDetector):
                 start = max(0.0, end - self.window_seconds)
             contrib = contributors[bin_idx]
             if contrib:
-                top = sorted(contrib.items(), key=lambda x: x[1], reverse=True)
-                reason = "composite: " + ", ".join(
-                    f"{name}={val:.2f}" for name, val in top
-                )
+                if self.fusion == "rrf":
+                    # contrib values are ranks (lower is better) — sort ascending
+                    top = sorted(contrib.items(), key=lambda x: x[1])
+                    reason = "composite (rrf): " + ", ".join(
+                        f"{name}@rank={int(val)}" for name, val in top
+                    )
+                else:
+                    top = sorted(contrib.items(), key=lambda x: x[1], reverse=True)
+                    reason = "composite: " + ", ".join(
+                        f"{name}={val:.2f}" for name, val in top
+                    )
             else:
                 reason = "composite (no contributing detectors at this bin)"
             candidates.append(
@@ -638,6 +703,8 @@ def build_detector(
             window_seconds=window_seconds,
             bin_seconds=weights.bin_seconds,
             min_score=weights.min_score,
+            fusion=weights.fusion,
+            rrf_k=weights.rrf_k,
         )
     raise ValueError(
         f"Unknown detector '{name}'. Available: {', '.join(AVAILABLE_DETECTORS)}. "

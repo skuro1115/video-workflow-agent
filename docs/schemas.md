@@ -134,7 +134,7 @@
 | --- | --- | --- |
 | `audio_rms.json` | `audio_rms` | `[{t, rms_db}, ...]` 秒単位 RMS 系列 |
 | `comment_density.json` | `comment_density` | `[{t, unique_users, messages}, ...]` 10秒 bin |
-| `composite_combined.json` | `composite` | `[{t, score}, ...]` bin 別合成スコア |
+| `composite_combined.json` | `composite` | `{fusion, rrf_k, bins: [{t, score}, ...]}` bin 別合成スコア（`fusion` は `"weighted_sum"` か `"rrf"`、`rrf_k` は RRF 使用時のみ） |
 | `composite_subdetectors.json` | `composite` | `{detector_name: [HotspotCandidate, ...]}` 各サブ検出器の素出力 |
 
 ---
