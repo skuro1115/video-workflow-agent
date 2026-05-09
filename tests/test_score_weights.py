@@ -137,5 +137,70 @@ class InteractivePromptTests(unittest.TestCase):
         self.assertIn("could not parse", out_stream.getvalue())
 
 
+class FusionFieldTests(unittest.TestCase):
+    def test_default_fusion_is_weighted_sum(self) -> None:
+        self.assertEqual(Weights().fusion, "weighted_sum")
+        self.assertEqual(default_weights().fusion, "weighted_sum")
+
+    def test_load_fusion_and_rrf_k(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "w.json"
+            p.write_text(json.dumps({
+                "detectors": [{"name": "audio_rms", "weight": 1.0}],
+                "fusion": "rrf",
+                "rrf_k": 30,
+            }))
+            loaded = load_weights(p)
+        self.assertEqual(loaded.fusion, "rrf")
+        self.assertEqual(loaded.rrf_k, 30)
+
+    def test_load_invalid_fusion_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "w.json"
+            p.write_text(json.dumps({
+                "detectors": [{"name": "audio_rms", "weight": 1.0}],
+                "fusion": "average",
+            }))
+            with self.assertRaises(WeightsConfigError):
+                load_weights(p)
+
+    def test_load_negative_rrf_k_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "w.json"
+            p.write_text(json.dumps({
+                "detectors": [{"name": "audio_rms", "weight": 1.0}],
+                "fusion": "rrf",
+                "rrf_k": 0,
+            }))
+            with self.assertRaises(WeightsConfigError):
+                load_weights(p)
+
+    def test_legacy_file_without_fusion_loads(self) -> None:
+        # Pre-RRF weights.json files should still load — fusion and rrf_k default in.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "old.json"
+            p.write_text(json.dumps({
+                "detectors": [{"name": "audio_rms", "weight": 1.0}],
+                "bin_seconds": 1.0,
+                "min_score": 0.0,
+            }))
+            loaded = load_weights(p)
+        self.assertEqual(loaded.fusion, "weighted_sum")
+        self.assertEqual(loaded.rrf_k, 60)
+
+    def test_round_trip_preserves_fusion_fields(self) -> None:
+        w = Weights(
+            detectors=[DetectorWeight("audio_rms", 1.0)],
+            fusion="rrf",
+            rrf_k=42,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "w.json"
+            save_weights(p, w)
+            loaded = load_weights(p)
+        self.assertEqual(loaded.fusion, "rrf")
+        self.assertEqual(loaded.rrf_k, 42)
+
+
 if __name__ == "__main__":
     unittest.main()

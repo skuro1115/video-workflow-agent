@@ -53,6 +53,15 @@
 - [x] `tests/test_eval.py`: Peak 解釈 / overlap 判定 / loader / summary フォーマットの 17 テスト
 - [x] 合成動画での 0→100 検証: `audio_rms` で 3/3 ピーク捕捉・100% precision を確認
 
+### 第4セッション-b（合成方式: RRF オプション）
+- [x] `Weights.fusion`（`"weighted_sum"` or `"rrf"`）と `Weights.rrf_k` を追加。デフォルトは `weighted_sum` で完全な後方互換
+- [x] `CompositeDetector` を 2 モード対応に拡張: 既存の重み付き和に加え、Reciprocal Rank Fusion を実装
+- [x] RRF 用の reason フォーマット（`"composite (rrf): audio_rms@rank=1, comment_density@rank=2"`）
+- [x] `composite_combined.json` debug dump に fusion 種別を含める（互換性: 上位スキーマが `[...]` から `{fusion, bins:[...]}` に変わる）
+- [x] [weights.example.json](../weights.example.json) に新フィールドを追記
+- [x] tests: RRF 5 件 + score_weights JSON 6 件の追加（合計 70 件）
+- [x] 既存 `weights.json`（fusion フィールド無し）を読んでも `weighted_sum` として正常動作することを test で保証
+
 ## 未完了 / 次にやること
 
 ### 優先度: 高（次のセッションで触る想定）
@@ -65,9 +74,9 @@
 ### 優先度: 中（検出器の本実装）
 
 - [ ] `scenedetect` 検出器: PySceneDetect 導入。`requirements.txt` の `scenedetect` を有効化
-- [ ] スコア合成方式の高度化: 現状は per-bin 重み付き和（min-max 正規化 + 線形合成）。RRF（Reciprocal Rank Fusion）を選べるよう `weights.fusion: "weighted_sum" | "rrf"` を追加
 - [ ] チャットログ変換アダプタ: Twitch chat replay / YouTube yt-dlp 出力 → 標準形式 JSON
 - [ ] チャット詳細スコア: ユニークユーザ数だけでなく「草 / lol / w連投」など特定リアクションの数を信号に
+- [ ] z-score 正規化オプション（複数動画にまたがる絶対比較が必要になったら）
 
 ### 優先度: 中（段階的要約）
 
@@ -85,6 +94,43 @@
 - [ ] SNS 投稿アダプタ（YouTube Shorts / X / TikTok）
 
 ## 設計判断ログ
+
+### 2026-05-09（第4セッション-b）
+
+**RRF を `weighted_sum` の代替として追加（置き換えではなく併設）**
+- 候補:
+  1. `weighted_sum` のままで外れ値耐性パラメータを追加（top-k トリミング、winsorize 等）
+  2. RRF（順位ベース合成）を fusion オプションとして追加
+  3. RRF をデフォルトに変更
+- 採用: (2)
+- 理由:
+  - (1) は調整が増え非エンジニアには複雑になる
+  - (2) は IR 文献で標準（Cormack et al. 2009）。実装はシンプル、`rrf_k` 1パラメータで挙動が決まる
+  - (3) は既存ユーザの結果が変わる破壊的変更。スコア値が信頼できる場合は `weighted_sum` の方が直感的に強いため、デフォルトは据え置き
+- トレードオフ: 同じデータでも fusion で結果が変わるため、`composite_combined.json` debug dump に fusion 種別を入れて再現性を確保
+- 既存 `weights.json` 互換: `fusion` フィールド無しは `weighted_sum` 扱い。test で保証
+
+**RRF の bin 投影は「同一検出器が同じ bin を複数候補で覆ったら最良 rank を採用」**
+- 候補:
+  1. 最良 rank を採用（min）
+  2. 平均 rank を採用
+  3. 候補ごとに contribution を加算（同じ検出器でも複数寄与可）
+- 採用: (1)
+- 理由:
+  - RRF の意味は「この検出器がその位置をどれだけ強く推したか」。同検出器が複数候補で同じ bin を覆ったら強く推した方を取るのが自然
+  - (3) は同じ検出器が複数寄与で over-count され、検出器間の寄与バランスが崩れる
+  - (2) は実装は簡単だが、強い候補が弱い候補で薄まる
+
+**RRF スコアの正規化基準: 全検出器が rank 1 を出した bin が score=1.0**
+- 候補:
+  1. 正規化しない（生の RRF score をそのまま）
+  2. 全検出器 rank 1 を分母に
+  3. 観測された combined の最大値を分母に
+- 採用: (2)
+- 理由:
+  - (1) は `min_score` の意味が変わる（[0, ~0.03] みたいなレンジになる）
+  - (3) は動画間で意味が変わる
+  - (2) は理論最大値で割るので、`min_score` の意味（[0, 1] の閾値）が `weighted_sum` と同じに保てる
 
 ### 2026-05-09（第3セッション-b）
 

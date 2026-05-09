@@ -84,7 +84,9 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 
 ### `--detector composite`（複数検出器の合成）
 
-`CompositeDetector`。`--weights <path>` または `--interactive-weights` で重み設定を渡す。
+`CompositeDetector`。`--weights <path>` または `--interactive-weights` で重み設定を渡す。`weights.fusion` で2種類の合成方式から選べる:
+
+#### `fusion: "weighted_sum"`（デフォルト）
 
 1. 各サブ検出器を独立に走らせる（個別失敗は WARNING で握りつぶす）
 2. 各検出器のスコアを **その動画内で min-max 正規化** して [0, 1] に揃える
@@ -93,7 +95,22 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 5. `min_score` 以上の bin から NMS で上位 K 個を選ぶ
 6. reason は寄与した検出器名 + 寄与量を `"composite: comment_density=2.00, audio_rms=0.36"` のように残す
 
-`--debug` で `composite_combined.json`（bin 別合成スコア）と `composite_subdetectors.json`（各検出器の素の出力）を吐く。
+#### `fusion: "rrf"`（Reciprocal Rank Fusion）
+
+1. 各検出器の候補を score 降順に並べて rank 1, 2, ... を振る（**スコアの大きさは捨てる**）
+2. 候補が覆う bin にその検出器の rank を割り当てる（同じ bin を複数候補が覆うなら最良 rank を使う）
+3. bin スコア = `sum_i (weight_i / (rrf_k + rank_i)) / 最大可能値`（最大可能値 = 全検出器が rank 1 のとき）
+4. 以降は weighted_sum と同じ NMS / `min_score` フィルタ
+5. reason は `"composite (rrf): audio_rms@rank=1, comment_density@rank=2"` のように rank を残す
+
+`rrf_k` のデフォルトは 60（IR 文献の標準値）。小さくすると上位 rank の差を強調、大きくすると平準化。
+
+#### モードの選び分け
+
+- スコアの大きさが信頼できる（外れ値が少ない）→ `weighted_sum`
+- 1つの検出器が偶発的に巨大スコアを出す可能性がある、または検出器のスコア分布が異なる（chat 密度 vs 音声 dB 等）→ `rrf`
+
+`--debug` で `composite_combined.json`（fusion 種別 + bin 別合成スコア）と `composite_subdetectors.json`（各検出器の素の出力）を吐く。
 
 ### 将来想定
 

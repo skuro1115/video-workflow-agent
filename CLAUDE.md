@@ -71,7 +71,7 @@ Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`,
 
 - **No Python video bindings.** Subprocess to `ffmpeg`/`ffprobe`. Don't add `ffmpeg-python`/`av`/`moviepy`/`numpy` without discussing the design log in [docs/tasks.md](docs/tasks.md).
 - **`AudioRmsDetector` uses raw PCM, not ffmpeg `astats` parsing.** Astats text format is fragile across ffmpeg versions; PCM is rock-solid. See design log.
-- **Score normalisation: min-max within each detector, then weighted sum.** RRF is on the roadmap as an alternative; don't change the current default without updating the design log.
+- **Composite fusion: `weighted_sum` (default) or `rrf`.** `weighted_sum` does min-max normalise → weighted average and is intuitive but vulnerable to outlier scores. `rrf` discards score magnitudes and uses ranks, so one giant outlier can't dominate. Pick by detector mix, not just preference — see the design log in [docs/tasks.md](docs/tasks.md).
 - **CompositeDetector skips bins with zero contribution.** A bin nobody scored is not a candidate, even with `min_score=0`. Don't relax this without thinking — it reintroduces a real bug.
 - **Single-candidate edge case: norm = 1.0, not 0.** When a sub-detector returns one candidate, min-max would degenerate to zero and silently drop it. The fallback is `if s_max <= s_min: norm = 1.0`. Don't remove the guard.
 - **`--export-clips` is opt-in.** `--from-plan` implies it; nothing else does.

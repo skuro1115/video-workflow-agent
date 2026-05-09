@@ -76,11 +76,19 @@ python -m src.main --input samples/sample.mp4 --output output/ \
     { "name": "comment_density", "weight": 2.0 }
   ],
   "bin_seconds": 1.0,
-  "min_score":   0.0
+  "min_score":   0.0,
+  "fusion":      "weighted_sum",
+  "rrf_k":       60
 }
 ```
 
-`weight = 0` でその検出器を無効化。`bin_seconds` は合成時の時間粒度。`min_score` は合成スコアの下限フィルタ。
+- `weight = 0` でその検出器を無効化
+- `bin_seconds`: 合成時の時間粒度
+- `min_score`: 合成スコアの下限フィルタ
+- `fusion`: `"weighted_sum"`（デフォルト, スコア値で合成）または `"rrf"`（順位ベース合成, 外れ値に強い）
+- `rrf_k`: RRF の damping 定数（`fusion: "rrf"` のときのみ使用、デフォルト 60）
+
+詳細は [docs/workflow.md](docs/workflow.md#--detector-composite複数検出器の合成) を参照。
 
 ### チャットログ形式 ([samples/chat_log.example.json](samples/chat_log.example.json))
 
