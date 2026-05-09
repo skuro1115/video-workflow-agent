@@ -1,12 +1,14 @@
 """Hotspot candidate detection.
 
-Pluggable interface. Two implementations live here today:
+Pluggable interface. Three implementations live here today:
 
 - ``EvenSamplingDetector`` — deterministic placeholder, splits the video into
   N evenly-spaced windows. Useful as a fallback and for testing.
 - ``AudioRmsDetector`` — picks windows around audio loudness peaks. Extracts
   raw PCM via ffmpeg and computes per-second RMS in Python (see the design
   log in docs/tasks.md for why we don't parse ffmpeg ``astats`` text output).
+- ``CommentDensityDetector`` — picks windows around bursts of live-chat
+  activity. Counts unique users per bin so a single spammer can't dominate.
 
 New detectors should implement ``HotspotDetector.detect()`` and register in
 ``build_detector()``.
@@ -212,8 +214,14 @@ class AudioRmsDetector(HotspotDetector):
             result = subprocess.run(cmd, check=True, capture_output=True)
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
-            # Most likely cause: no audio stream in the input.
-            if "Stream specifier" in stderr or "does not match any streams" in stderr:
+            # Treat any "no usable audio stream" variant as empty signal.
+            no_audio_markers = (
+                "Stream specifier",
+                "does not match any streams",
+                "Output file does not contain any stream",
+                "Output file #0 does not contain any stream",
+            )
+            if any(m in stderr for m in no_audio_markers):
                 return []
             raise AudioExtractionError(
                 f"ffmpeg audio extraction failed: {stderr or 'no stderr'}"
@@ -251,16 +259,174 @@ class AudioRmsDetector(HotspotDetector):
 
 
 # ---------------------------------------------------------------------------
+# Comment density detector (live chat → hotspots)
+# ---------------------------------------------------------------------------
+
+class CommentDensityDetector(HotspotDetector):
+    """Pick windows with the highest live-chat comment density.
+
+    Input: a chat-log JSON file with timestamps relative to the video start::
+
+        [
+          {"t": 12.5, "user": "alice", "text": "lol"},
+          {"t": 13.1, "user": "bob",   "text": "草"},
+          ...
+        ]
+
+    Algorithm: bin messages by ``BIN_SECONDS``, count **unique users** per bin
+    (so a single spammer can't dominate), greedy NMS top-K. ``score`` is the
+    min-max-normalised unique-user count. ``reason`` includes the raw count.
+
+    Source-format notes (see ``docs/workflow.md``):
+
+    - Twitch chat replay → use ``--chat-format twitch_replay`` (TODO)
+    - YouTube live chat (``yt-dlp --live-from-start --write-info-json``) →
+      ``--chat-format youtube_yt_dlp`` (TODO)
+    - For now only the canonical normalised JSON above is accepted.
+    """
+
+    BIN_SECONDS = 10.0  # 10s feels right for chat — tune later from real data
+
+    def __init__(self, count: int, window_seconds: float, chat_log_path: Path) -> None:
+        self.count = max(1, count)
+        self.window_seconds = max(1.0, window_seconds)
+        self.chat_log_path = chat_log_path
+
+    def detect(
+        self,
+        *,
+        input_path: Path,
+        duration: float,
+        debug_dir: Path | None = None,
+    ) -> list[HotspotCandidate]:
+        del input_path  # not needed — chat log is the signal
+
+        if not self.chat_log_path.exists():
+            raise FileNotFoundError(
+                f"Chat log not found: {self.chat_log_path}. "
+                "Pass --chat-log <path> to point at the chat history."
+            )
+        try:
+            raw = json.loads(self.chat_log_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid chat-log JSON {self.chat_log_path}: {e}") from e
+
+        if isinstance(raw, dict) and "messages" in raw:
+            messages = raw["messages"]
+        else:
+            messages = raw
+
+        n_bins = max(1, int(math.ceil(duration / self.BIN_SECONDS)))
+        unique_users: list[set[str]] = [set() for _ in range(n_bins)]
+        msg_count: list[int] = [0] * n_bins
+
+        for m in messages:
+            try:
+                t = float(m.get("t", -1))
+            except (TypeError, ValueError):
+                continue
+            if t < 0 or t >= duration:
+                continue
+            b = int(t / self.BIN_SECONDS)
+            unique_users[b].add(str(m.get("user", "")))
+            msg_count[b] += 1
+
+        density = [len(s) for s in unique_users]
+
+        if debug_dir is not None:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / "comment_density.json").write_text(
+                json.dumps(
+                    [
+                        {"t": round(i * self.BIN_SECONDS, 3),
+                         "unique_users": density[i],
+                         "messages": msg_count[i]}
+                        for i in range(n_bins)
+                    ],
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+        if not any(density):
+            return []
+
+        d_max = max(density)
+        d_min = min(density)
+        d_range = (d_max - d_min) if d_max > d_min else 1.0
+
+        sorted_bins = sorted(
+            ((i * self.BIN_SECONDS, density[i]) for i in range(n_bins) if density[i] > 0),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        picks: list[tuple[float, int]] = []
+        for t, d in sorted_bins:
+            if len(picks) >= self.count:
+                break
+            if any(abs(t - pt) < self.window_seconds for pt, _ in picks):
+                continue
+            picks.append((t, d))
+
+        candidates: list[HotspotCandidate] = []
+        for t, d in picks:
+            start = max(0.0, t - self.window_seconds / 2)
+            end = min(duration, start + self.window_seconds)
+            if end - start < self.window_seconds:
+                start = max(0.0, end - self.window_seconds)
+            score = (d - d_min) / d_range
+            candidates.append(
+                HotspotCandidate(
+                    start=round(start, 3),
+                    end=round(end, 3),
+                    score=round(max(0.0, min(1.0, score)), 3),
+                    reason=f"comment density: {d} unique users in {self.BIN_SECONDS:g}s",
+                )
+            )
+
+        candidates.sort(key=lambda c: c.start)
+        return candidates
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
-def build_detector(name: str, count: int, window_seconds: float) -> HotspotDetector:
-    """Factory keyed by detector name from the CLI."""
+# Exposed so callers can discover what is available without importing the
+# classes individually.
+AVAILABLE_DETECTORS: tuple[str, ...] = (
+    "even",
+    "audio_rms",
+    "comment_density",
+)
+
+
+def build_detector(
+    name: str,
+    count: int,
+    window_seconds: float,
+    *,
+    chat_log_path: Path | None = None,
+) -> HotspotDetector:
+    """Factory keyed by detector name from the CLI.
+
+    ``chat_log_path`` is required when ``name == 'comment_density'``.
+    """
     if name == "even":
         return EvenSamplingDetector(count=count, window_seconds=window_seconds)
     if name == "audio_rms":
         return AudioRmsDetector(count=count, window_seconds=window_seconds)
+    if name == "comment_density":
+        if chat_log_path is None:
+            raise ValueError(
+                "comment_density detector requires --chat-log <path>."
+            )
+        return CommentDensityDetector(
+            count=count,
+            window_seconds=window_seconds,
+            chat_log_path=chat_log_path,
+        )
     raise ValueError(
-        f"Unknown detector '{name}'. Available: 'even', 'audio_rms'. "
+        f"Unknown detector '{name}'. Available: {', '.join(AVAILABLE_DETECTORS)}. "
         "Add new detectors in src/hotspot_detector.py and register them here."
     )

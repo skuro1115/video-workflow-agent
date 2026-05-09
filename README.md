@@ -2,8 +2,8 @@
 
 長尺動画 / 配信アーカイブから盛り上がりポイントを検出し、段階的に短尺クリップへ加工するための自動化基盤。
 
-> **Status: 音声ベース検出 (audio_rms) 動作中 (2026-05-08)**
-> パイプライン骨格、JSON 出力仕様、`--from-plan` 再 export、`unittest` ベースのテストまで通っている。検出器は `even`（等間隔プレースホルダ）と `audio_rms`（音声 RMS のピーク + NMS）の2種。字幕・LLM ベースの検出器は未実装。
+> **Status: ライブチャット検出器 (comment_density) 追加 (2026-05-09)**
+> 検出器は `even` / `audio_rms` / `comment_density`（ライブチャット密度）の3種。複数信号を統合する複合検出器、字幕・LLM ベース検出器は未実装。
 
 ---
 
@@ -38,18 +38,33 @@ cp /path/to/video.mp4 samples/sample.mp4
 # 2. プレースホルダ検出器でパイプラインを通す（JSON だけ出す）
 python -m src.main --input samples/sample.mp4 --output output/
 
-# 3. 音声 RMS で盛り上がり候補を出す（推奨）
+# 3. 音声 RMS で盛り上がり候補を出す（音声トラックがある動画向け）
 python -m src.main --input samples/sample.mp4 --output output/ \
     --detector audio_rms --candidates 6 --window 30 --debug
 
-# 4. プランを人間がレビュー → 編集 → そのまま export
+# 4. ライブ配信のチャットログから盛り上がり候補を出す
+python -m src.main --input live.mp4 --output output/ \
+    --detector comment_density --chat-log chat.json --candidates 6 --window 30
+
+# 5. プランを人間がレビュー → 編集 → そのまま export
 python -m src.main --input samples/sample.mp4 --output output/ \
     --from-plan output/clip_plan.json
 
-# 5. 検出から export まで一気に
+# 6. 検出から export まで一気に
 python -m src.main --input samples/sample.mp4 --output output/ \
     --detector audio_rms --export-clips
 ```
+
+### チャットログ形式 ([samples/chat_log.example.json](samples/chat_log.example.json))
+
+```json
+[
+  { "t": 56.4, "user": "alice", "text": "うわあ" },
+  { "t": 57.0, "user": "bob",   "text": "wwww" }
+]
+```
+
+`t` は動画頭からの秒数。Twitch / YouTube ライブのチャット履歴を取り込むには、それぞれの形式（yt-dlp など）からこの形式に変換するスクリプトが別途必要（未実装）。
 
 合成サンプル動画（手元に動画が無いときの動作確認用）:
 
@@ -84,14 +99,15 @@ python -m unittest discover -s tests
 | --- | --- | --- |
 | `--input` | (必須) | 入力動画パス |
 | `--output` | (必須) | 出力ディレクトリ |
-| `--detector` | `even` | ホットポイント検出器名: `even` / `audio_rms` |
+| `--detector` | `even` | 検出器名: `even` / `audio_rms` / `comment_density` |
 | `--candidates` | `6` | 候補区間の本数 |
-| `--window` | `30.0` | 1候補あたりの秒数（audio_rms では NMS の最小間隔を兼ねる） |
+| `--window` | `30.0` | 1候補の長さ（NMS の最小間隔を兼ねる） |
 | `--min-duration` | `10.0` | クリップ最小秒数（短すぎる候補は捨てる） |
 | `--max-duration` | `60.0` | クリップ最大秒数（長すぎる候補は切り詰める） |
 | `--export-clips` | off | ffmpeg で実エンコードする |
 | `--from-plan` | off | `clip_plan.json` を読んで export だけ実行（手編集ワークフロー用） |
 | `--debug` | off | 検出器の中間データを `<output>/debug/` に書き出す |
+| `--chat-log` | none | `comment_density` 用のチャットログ JSON |
 
 ---
 
@@ -123,8 +139,10 @@ samples/               # 入力動画置き場（gitignore）
 
 1. **MVP scaffold** ✅ — ffprobe + 等間隔ホットポイント + ffmpeg 切り出し
 2. **音声・シーン解析** — 音声 RMS ✅ / PySceneDetect でショット境界 ⏳
-3. **字幕・LLM** — Whisper で文字起こし、LLM で盛り上がり判定
-4. **段階的要約** — 1h → 10min ダイジェスト → 短尺複数本のカスケード
-5. **配信** — サムネイル、字幕焼き込み、SNS 投稿、レビュー UI
+3. **コミュニティ信号** — ライブチャット密度 ✅ / リアクション分類 ⏳
+4. **複数検出器の合成** — 重み付き合成 ⏳ / 順位ベース統合 (RRF) ⏳
+5. **字幕・LLM** — Whisper で文字起こし、LLM で盛り上がり判定
+6. **段階的要約** — 1h → 10min ダイジェスト → 短尺複数本のカスケード
+7. **配信** — サムネイル、字幕焼き込み、SNS 投稿、レビュー UI
 
 詳細・優先度は [docs/tasks.md](docs/tasks.md)。

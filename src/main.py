@@ -21,8 +21,17 @@ Two modes:
    only the export step. Useful when a human has reviewed and edited the plan
    before encoding.
 
-Pass ``--debug`` to write detector intermediate artefacts (e.g. the raw RMS
-series for ``audio_rms``) into ``<output>/debug/``.
+Detector selection
+------------------
+
+``--detector`` accepts:
+
+- ``even``            placeholder (evenly-spaced windows)
+- ``audio_rms``       audio loudness peaks (requires ffmpeg)
+- ``comment_density`` live-chat density peaks (requires ``--chat-log <path>``)
+
+Pass ``--debug`` to write detector intermediate artefacts (raw RMS series,
+comment density bins) into ``<output>/debug/``.
 """
 from __future__ import annotations
 
@@ -34,7 +43,7 @@ from pathlib import Path
 from .clip_exporter import FFmpegNotFoundError, export_clips
 from .clip_planner import ClipPlan, plan_clips
 from .config import PipelineConfig
-from .hotspot_detector import AudioExtractionError, build_detector
+from .hotspot_detector import AVAILABLE_DETECTORS, AudioExtractionError, build_detector
 from .video_info import FFprobeFailedError, FFprobeNotFoundError, probe
 
 
@@ -70,7 +79,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--output", required=True, type=Path, help="Output directory")
     p.add_argument(
         "--detector", default="even",
-        help="Hotspot detector name. Available: 'even', 'audio_rms'.",
+        help="Hotspot detector name. Available: " + ", ".join(AVAILABLE_DETECTORS),
     )
     p.add_argument("--candidates", type=int, default=6, help="Number of hotspot candidates")
     p.add_argument(
@@ -92,10 +101,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--debug", action="store_true",
         help="Write detector intermediate artefacts to <output>/debug/.",
     )
+    p.add_argument(
+        "--chat-log", type=Path, default=None,
+        help="Path to a chat-log JSON for the comment_density detector.",
+    )
     return p.parse_args(argv)
 
 
-def _run_full_pipeline(cfg: PipelineConfig, *, debug: bool) -> int:
+def _run_full_pipeline(
+    cfg: PipelineConfig,
+    *,
+    debug: bool,
+    chat_log_path: Path | None,
+) -> int:
     print(f"[1/4] Probing video: {cfg.input_path}")
     try:
         info = probe(cfg.input_path)
@@ -116,7 +134,16 @@ def _run_full_pipeline(cfg: PipelineConfig, *, debug: bool) -> int:
     )
 
     print(f"[2/4] Detecting hotspot candidates (detector={cfg.detector})")
-    detector = build_detector(cfg.detector, cfg.candidate_count, cfg.candidate_duration)
+    try:
+        detector = build_detector(
+            cfg.detector,
+            cfg.candidate_count,
+            cfg.candidate_duration,
+            chat_log_path=chat_log_path,
+        )
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 9
     debug_dir = (cfg.output_dir / "debug") if debug else None
     try:
         candidates = detector.detect(
@@ -127,6 +154,9 @@ def _run_full_pipeline(cfg: PipelineConfig, *, debug: bool) -> int:
     except AudioExtractionError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 6
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 10
     _write_json(
         cfg.output_dir / "hotspot_candidates.json",
         [c.to_dict() for c in candidates],
@@ -190,11 +220,17 @@ def _run_from_plan(cfg: PipelineConfig, plan_path: Path) -> int:
     return _run_export(cfg, plans)
 
 
-def run(cfg: PipelineConfig, *, from_plan: Path | None, debug: bool) -> int:
+def run(
+    cfg: PipelineConfig,
+    *,
+    from_plan: Path | None,
+    debug: bool,
+    chat_log_path: Path | None,
+) -> int:
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     if from_plan is not None:
         return _run_from_plan(cfg, from_plan)
-    return _run_full_pipeline(cfg, debug=debug)
+    return _run_full_pipeline(cfg, debug=debug, chat_log_path=chat_log_path)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -209,7 +245,12 @@ def main(argv: list[str] | None = None) -> int:
         max_clip_duration=args.max_duration,
         export_clips=args.export_clips or args.from_plan is not None,
     )
-    return run(cfg, from_plan=args.from_plan, debug=args.debug)
+    return run(
+        cfg,
+        from_plan=args.from_plan,
+        debug=args.debug,
+        chat_log_path=args.chat_log,
+    )
 
 
 if __name__ == "__main__":

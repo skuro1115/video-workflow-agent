@@ -8,13 +8,16 @@ RMS series, so the test suite has zero external dependencies.
 """
 from __future__ import annotations
 
+import json
 import math
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from src.hotspot_detector import (
     AudioRmsDetector,
+    CommentDensityDetector,
     EvenSamplingDetector,
     build_detector,
 )
@@ -164,6 +167,85 @@ class FactoryTests(unittest.TestCase):
     def test_unknown_raises(self) -> None:
         with self.assertRaises(ValueError):
             build_detector("nonexistent", count=3, window_seconds=20.0)
+
+    def test_comment_density_requires_chat_log(self) -> None:
+        with self.assertRaises(ValueError):
+            build_detector("comment_density", count=3, window_seconds=20.0)
+
+
+class CommentDensityDetectorTests(unittest.TestCase):
+    def _write_chat(self, messages: list[dict]) -> Path:
+        f = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8",
+        )
+        json.dump(messages, f, ensure_ascii=False)
+        f.close()
+        return Path(f.name)
+
+    def test_picks_dense_window(self) -> None:
+        # Three burst clusters around t=15, t=60, t=95.
+        msgs = (
+            [{"t": 15.0 + 0.1 * i, "user": f"u{i}", "text": "x"} for i in range(8)] +
+            [{"t": 60.0 + 0.1 * i, "user": f"v{i}", "text": "x"} for i in range(12)] +
+            [{"t": 95.0 + 0.1 * i, "user": f"w{i}", "text": "x"} for i in range(6)]
+        )
+        path = self._write_chat(msgs)
+        try:
+            det = CommentDensityDetector(
+                count=3, window_seconds=20.0, chat_log_path=path,
+            )
+            result = det.detect(input_path=Path("dummy"), duration=120.0)
+        finally:
+            path.unlink()
+
+        self.assertEqual(len(result), 3)
+        # Loudest cluster (t≈60, 12 unique users) should have score=1.0.
+        scores_sorted = sorted([c.score for c in result], reverse=True)
+        self.assertAlmostEqual(scores_sorted[0], 1.0, places=2)
+        for c in result:
+            self.assertIn("comment density", c.reason)
+
+    def test_unique_users_not_message_count(self) -> None:
+        # 1 spammer with 50 messages vs 5 unique users with 1 message each.
+        msgs_spam = [{"t": 10.0 + 0.05 * i, "user": "spammer", "text": "."} for i in range(50)]
+        msgs_real = [{"t": 60.0 + i, "user": f"u{i}", "text": "wow"} for i in range(5)]
+        path = self._write_chat(msgs_spam + msgs_real)
+        try:
+            det = CommentDensityDetector(
+                count=2, window_seconds=15.0, chat_log_path=path,
+            )
+            result = det.detect(input_path=Path("dummy"), duration=120.0)
+        finally:
+            path.unlink()
+
+        # The 5-unique-user burst should outrank the 1-spammer flood.
+        self.assertEqual(len(result), 2)
+        sorted_by_score = sorted(result, key=lambda c: c.score, reverse=True)
+        # Top pick centered around t=60 (the real users).
+        top_center = (sorted_by_score[0].start + sorted_by_score[0].end) / 2
+        self.assertGreater(top_center, 50.0)
+        self.assertLess(top_center, 70.0)
+
+    def test_missing_file_raises(self) -> None:
+        det = CommentDensityDetector(
+            count=3, window_seconds=10.0,
+            chat_log_path=Path("/nonexistent/chat.json"),
+        )
+        with self.assertRaises(FileNotFoundError):
+            det.detect(input_path=Path("dummy"), duration=60.0)
+
+    def test_empty_chat_returns_empty(self) -> None:
+        path = self._write_chat([])
+        try:
+            det = CommentDensityDetector(
+                count=3, window_seconds=10.0, chat_log_path=path,
+            )
+            self.assertEqual(
+                det.detect(input_path=Path("dummy"), duration=60.0),
+                [],
+            )
+        finally:
+            path.unlink()
 
 
 if __name__ == "__main__":

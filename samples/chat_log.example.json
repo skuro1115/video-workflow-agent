@@ -1,0 +1,37 @@
+[
+  {"t": 12.0, "user": "alice", "text": "始まった"},
+  {"t": 15.5, "user": "bob",   "text": "うおおお"},
+  {"t": 16.0, "user": "carol", "text": "草"},
+  {"t": 16.4, "user": "dave",  "text": "lol"},
+  {"t": 17.0, "user": "eve",   "text": "やばい"},
+  {"t": 17.8, "user": "frank", "text": "wwww"},
+  {"t": 18.2, "user": "alice", "text": "今のは草"},
+  {"t": 19.0, "user": "george","text": "何があった"},
+
+  {"t": 35.0, "user": "alice", "text": "何か飲もう"},
+  {"t": 42.0, "user": "bob",   "text": "ねむい"},
+
+  {"t": 56.0, "user": "alice", "text": "！？"},
+  {"t": 56.4, "user": "bob",   "text": "うわあ"},
+  {"t": 57.0, "user": "carol", "text": "wwwww"},
+  {"t": 57.8, "user": "dave",  "text": "草"},
+  {"t": 58.5, "user": "eve",   "text": "ああああ"},
+  {"t": 59.1, "user": "frank", "text": "やばすぎ"},
+  {"t": 59.9, "user": "george","text": "lol"},
+  {"t": 60.5, "user": "alice", "text": "wwwwwwww"},
+  {"t": 61.2, "user": "harry", "text": "天才"},
+  {"t": 62.0, "user": "carol", "text": "今のすごい"},
+  {"t": 63.5, "user": "irene", "text": "草"},
+
+  {"t": 75.0, "user": "alice", "text": "ふつう"},
+
+  {"t": 90.5, "user": "bob",   "text": "あっ"},
+  {"t": 91.2, "user": "carol", "text": "草"},
+  {"t": 91.8, "user": "dave",  "text": "wwww"},
+  {"t": 92.3, "user": "eve",   "text": "やばい"},
+  {"t": 93.0, "user": "frank", "text": "lol"},
+  {"t": 93.7, "user": "alice", "text": "今の草"},
+  {"t": 94.2, "user": "george","text": "wwwwww"},
+
+  {"t": 110.0, "user": "alice", "text": "おわり"}
+]
