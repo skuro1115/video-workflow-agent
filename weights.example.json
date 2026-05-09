@@ -1,0 +1,14 @@
+{
+  "detectors": [
+    {
+      "name": "audio_rms",
+      "weight": 1.0
+    },
+    {
+      "name": "comment_density",
+      "weight": 2.0
+    }
+  ],
+  "bin_seconds": 1.0,
+  "min_score": 0.0
+}

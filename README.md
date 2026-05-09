@@ -2,8 +2,8 @@
 
 長尺動画 / 配信アーカイブから盛り上がりポイントを検出し、段階的に短尺クリップへ加工するための自動化基盤。
 
-> **Status: ライブチャット検出器 (comment_density) 追加 (2026-05-09)**
-> 検出器は `even` / `audio_rms` / `comment_density`（ライブチャット密度）の3種。複数信号を統合する複合検出器、字幕・LLM ベース検出器は未実装。
+> **Status: 複合検出（音声 + ライブチャット）動作中 (2026-05-09)**
+> 検出器は `even` / `audio_rms` / `comment_density`（ライブチャット密度）/ `composite`（重み付き合成）の4種。`composite` はスコア重みを外部 JSON または対話入力で設定できる。字幕・LLM ベース検出器は未実装。
 
 ---
 
@@ -32,6 +32,9 @@
 ## 使い方
 
 ```bash
+# 0. 利用可能な検出器の一覧
+python -m src.main --list-detectors
+
 # 1. 入力動画を samples/ に置く（任意のパスでも可）
 cp /path/to/video.mp4 samples/sample.mp4
 
@@ -46,14 +49,38 @@ python -m src.main --input samples/sample.mp4 --output output/ \
 python -m src.main --input live.mp4 --output output/ \
     --detector comment_density --chat-log chat.json --candidates 6 --window 30
 
-# 5. プランを人間がレビュー → 編集 → そのまま export
+# 5. 複数検出器を重み付きで合成（推奨・配信向け）
+python -m src.main --input live.mp4 --output output/ \
+    --detector composite --weights weights.example.json \
+    --chat-log chat.json --candidates 6 --window 30 --debug
+
+# 6. 重みをその場で対話入力（非エンジニア向け）
+python -m src.main --input live.mp4 --output output/ \
+    --interactive-weights --chat-log chat.json
+
+# 7. プランを人間がレビュー → 編集 → そのまま export
 python -m src.main --input samples/sample.mp4 --output output/ \
     --from-plan output/clip_plan.json
 
-# 6. 検出から export まで一気に
+# 8. 検出から export まで一気に
 python -m src.main --input samples/sample.mp4 --output output/ \
     --detector audio_rms --export-clips
 ```
+
+### 重み設定ファイル ([weights.example.json](weights.example.json))
+
+```json
+{
+  "detectors": [
+    { "name": "audio_rms",       "weight": 1.0 },
+    { "name": "comment_density", "weight": 2.0 }
+  ],
+  "bin_seconds": 1.0,
+  "min_score":   0.0
+}
+```
+
+`weight = 0` でその検出器を無効化。`bin_seconds` は合成時の時間粒度。`min_score` は合成スコアの下限フィルタ。
 
 ### チャットログ形式 ([samples/chat_log.example.json](samples/chat_log.example.json))
 
@@ -99,7 +126,7 @@ python -m unittest discover -s tests
 | --- | --- | --- |
 | `--input` | (必須) | 入力動画パス |
 | `--output` | (必須) | 出力ディレクトリ |
-| `--detector` | `even` | 検出器名: `even` / `audio_rms` / `comment_density` |
+| `--detector` | `even` | 検出器名: `even` / `audio_rms` / `comment_density` / `composite` |
 | `--candidates` | `6` | 候補区間の本数 |
 | `--window` | `30.0` | 1候補の長さ（NMS の最小間隔を兼ねる） |
 | `--min-duration` | `10.0` | クリップ最小秒数（短すぎる候補は捨てる） |
@@ -107,7 +134,10 @@ python -m unittest discover -s tests
 | `--export-clips` | off | ffmpeg で実エンコードする |
 | `--from-plan` | off | `clip_plan.json` を読んで export だけ実行（手編集ワークフロー用） |
 | `--debug` | off | 検出器の中間データを `<output>/debug/` に書き出す |
-| `--chat-log` | none | `comment_density` 用のチャットログ JSON |
+| `--chat-log` | none | `comment_density` / `composite` 用のチャットログ JSON |
+| `--weights` | none | `composite` 用の重み設定 JSON |
+| `--interactive-weights` | off | 重みを stdin で対話入力（`composite` を強制） |
+| `--list-detectors` | — | 登録済み検出器の一覧を出して終了 |
 
 ---
 
@@ -140,7 +170,7 @@ samples/               # 入力動画置き場（gitignore）
 1. **MVP scaffold** ✅ — ffprobe + 等間隔ホットポイント + ffmpeg 切り出し
 2. **音声・シーン解析** — 音声 RMS ✅ / PySceneDetect でショット境界 ⏳
 3. **コミュニティ信号** — ライブチャット密度 ✅ / リアクション分類 ⏳
-4. **複数検出器の合成** — 重み付き合成 ⏳ / 順位ベース統合 (RRF) ⏳
+4. **複数検出器の合成** — 重み付き合成 ✅ / 順位ベース統合 (RRF) ⏳
 5. **字幕・LLM** — Whisper で文字起こし、LLM で盛り上がり判定
 6. **段階的要約** — 1h → 10min ダイジェスト → 短尺複数本のカスケード
 7. **配信** — サムネイル、字幕焼き込み、SNS 投稿、レビュー UI

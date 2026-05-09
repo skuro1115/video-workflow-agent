@@ -1,6 +1,6 @@
 """Hotspot candidate detection.
 
-Pluggable interface. Three implementations live here today:
+Pluggable interface. Four implementations live here today:
 
 - ``EvenSamplingDetector`` — deterministic placeholder, splits the video into
   N evenly-spaced windows. Useful as a fallback and for testing.
@@ -9,6 +9,9 @@ Pluggable interface. Three implementations live here today:
   log in docs/tasks.md for why we don't parse ffmpeg ``astats`` text output).
 - ``CommentDensityDetector`` — picks windows around bursts of live-chat
   activity. Counts unique users per bin so a single spammer can't dominate.
+- ``CompositeDetector`` — runs multiple sub-detectors and combines their
+  per-bin scores via a weighted sum (weights configured externally; see
+  ``score_weights.py``).
 
 New detectors should implement ``HotspotDetector.detect()`` and register in
 ``build_detector()``.
@@ -20,6 +23,7 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -304,7 +308,7 @@ class CommentDensityDetector(HotspotDetector):
         if not self.chat_log_path.exists():
             raise FileNotFoundError(
                 f"Chat log not found: {self.chat_log_path}. "
-                "Pass --chat-log <path> to point at the chat history."
+                "Pass --chat-log <path> or remove comment_density from --weights."
             )
         try:
             raw = json.loads(self.chat_log_path.read_text(encoding="utf-8"))
@@ -389,6 +393,175 @@ class CommentDensityDetector(HotspotDetector):
 
 
 # ---------------------------------------------------------------------------
+# Composite detector — weighted combination of multiple sub-detectors
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SubDetectorSpec:
+    name: str
+    detector: HotspotDetector
+    weight: float
+
+
+class CompositeDetector(HotspotDetector):
+    """Run multiple sub-detectors and combine their scores into a single ranking.
+
+    Algorithm:
+
+    1. Run each sub-detector independently. (Failures are logged and skipped.)
+    2. Min-max normalise each detector's scores to [0, 1] within this video.
+    3. Project each candidate's normalised score onto a per-bin score array
+       (every bin within the candidate's [start, end] gets the value).
+    4. Combined per-bin score = ``sum(w_i * normalised_i) / sum(w_i)``.
+    5. Greedy NMS top-K over bins, with picks separated by ``window_seconds``.
+    6. Apply ``min_score`` threshold.
+
+    Reason strings cite which sub-detectors contributed and at what weight, so a
+    human reviewer can see why each clip was picked.
+    """
+
+    def __init__(
+        self,
+        sub_detectors: list[SubDetectorSpec],
+        *,
+        count: int,
+        window_seconds: float,
+        bin_seconds: float = 1.0,
+        min_score: float = 0.0,
+    ) -> None:
+        self.sub_detectors = sub_detectors
+        self.count = max(1, count)
+        self.window_seconds = max(1.0, window_seconds)
+        self.bin_seconds = max(0.1, bin_seconds)
+        self.min_score = max(0.0, min_score)
+
+    def detect(
+        self,
+        *,
+        input_path: Path,
+        duration: float,
+        debug_dir: Path | None = None,
+    ) -> list[HotspotCandidate]:
+        if duration <= 0:
+            return []
+
+        active = [s for s in self.sub_detectors if s.weight > 0]
+        if not active:
+            return []
+
+        n_bins = max(1, int(math.ceil(duration / self.bin_seconds)))
+        combined = [0.0] * n_bins
+        # Track per-bin contributing detectors so reasons can cite them.
+        contributors: list[dict[str, float]] = [dict() for _ in range(n_bins)]
+        total_weight = sum(s.weight for s in active)
+
+        per_detector_dump: dict[str, list[dict]] = {}
+
+        for spec in active:
+            try:
+                cands = spec.detector.detect(
+                    input_path=input_path,
+                    duration=duration,
+                    debug_dir=debug_dir,
+                )
+            except Exception as e:  # detector-level fault tolerance
+                print(
+                    f"WARNING: sub-detector '{spec.name}' failed: {e}",
+                    file=sys.stderr,
+                )
+                continue
+
+            per_detector_dump[spec.name] = [c.to_dict() for c in cands]
+            if not cands:
+                continue
+
+            scores = [c.score for c in cands]
+            s_min = min(scores)
+            s_max = max(scores)
+            # Edge case: if every candidate from this detector has the same
+            # score (including the single-candidate case), min-max would
+            # produce 0 for all of them and the detector would contribute
+            # nothing. Treat them all as equally maximal instead.
+            equal_scores = s_max <= s_min
+            s_range = 1.0 if equal_scores else (s_max - s_min)
+
+            for c in cands:
+                norm = 1.0 if equal_scores else (c.score - s_min) / s_range
+                start_bin = max(0, int(c.start / self.bin_seconds))
+                end_bin = min(n_bins, int(math.ceil(c.end / self.bin_seconds)))
+                for b in range(start_bin, end_bin):
+                    combined[b] += spec.weight * norm
+                    contributors[b][spec.name] = (
+                        contributors[b].get(spec.name, 0.0) + spec.weight * norm
+                    )
+
+        # Normalise by total weight so combined ∈ [0, 1].
+        for i in range(n_bins):
+            combined[i] /= total_weight
+
+        if debug_dir is not None:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / "composite_combined.json").write_text(
+                json.dumps(
+                    [{"t": round(i * self.bin_seconds, 3),
+                      "score": round(combined[i], 4)}
+                     for i in range(n_bins)],
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (debug_dir / "composite_subdetectors.json").write_text(
+                json.dumps(per_detector_dump, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        # Strictly > 0: a bin nobody contributed to is not a candidate, even
+        # when min_score is at its 0 default.
+        sorted_bins = sorted(
+            ((i, combined[i]) for i in range(n_bins)
+             if combined[i] > 0 and combined[i] >= self.min_score),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        picks: list[tuple[int, float]] = []
+        for bin_idx, score in sorted_bins:
+            if len(picks) >= self.count:
+                break
+            t = bin_idx * self.bin_seconds
+            if any(abs(t - pi * self.bin_seconds) < self.window_seconds for pi, _ in picks):
+                continue
+            picks.append((bin_idx, score))
+
+        candidates: list[HotspotCandidate] = []
+        for bin_idx, score in picks:
+            t = bin_idx * self.bin_seconds
+            start = max(0.0, t - self.window_seconds / 2)
+            end = min(duration, start + self.window_seconds)
+            if end - start < self.window_seconds:
+                start = max(0.0, end - self.window_seconds)
+            contrib = contributors[bin_idx]
+            if contrib:
+                top = sorted(contrib.items(), key=lambda x: x[1], reverse=True)
+                reason = "composite: " + ", ".join(
+                    f"{name}={val:.2f}" for name, val in top
+                )
+            else:
+                reason = "composite (no contributing detectors at this bin)"
+            candidates.append(
+                HotspotCandidate(
+                    start=round(start, 3),
+                    end=round(end, 3),
+                    score=round(score, 3),
+                    reason=reason,
+                )
+            )
+
+        candidates.sort(key=lambda c: c.start)
+        return candidates
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -398,6 +571,7 @@ AVAILABLE_DETECTORS: tuple[str, ...] = (
     "even",
     "audio_rms",
     "comment_density",
+    "composite",
 )
 
 
@@ -407,10 +581,13 @@ def build_detector(
     window_seconds: float,
     *,
     chat_log_path: Path | None = None,
+    weights=None,  # src.score_weights.Weights — typed loosely to avoid import cycle
 ) -> HotspotDetector:
     """Factory keyed by detector name from the CLI.
 
-    ``chat_log_path`` is required when ``name == 'comment_density'``.
+    ``chat_log_path`` is required when ``name == 'comment_density'`` (or when
+    ``composite`` includes ``comment_density``). ``weights`` is required when
+    ``name == 'composite'``.
     """
     if name == "even":
         return EvenSamplingDetector(count=count, window_seconds=window_seconds)
@@ -425,6 +602,42 @@ def build_detector(
             count=count,
             window_seconds=window_seconds,
             chat_log_path=chat_log_path,
+        )
+    if name == "composite":
+        if weights is None or not weights.detectors:
+            raise ValueError(
+                "composite detector requires --weights <path> or "
+                "--interactive-weights."
+            )
+        sub_specs: list[SubDetectorSpec] = []
+        for dw in weights.enabled():
+            if dw.name == "composite":
+                continue  # nested composites not supported
+            try:
+                sub = build_detector(
+                    dw.name,
+                    count=count,
+                    window_seconds=window_seconds,
+                    chat_log_path=chat_log_path,
+                )
+            except ValueError as e:
+                print(
+                    f"WARNING: weight references detector '{dw.name}' but "
+                    f"build failed ({e}); skipping.",
+                    file=sys.stderr,
+                )
+                continue
+            sub_specs.append(SubDetectorSpec(name=dw.name, detector=sub, weight=dw.weight))
+        if not sub_specs:
+            raise ValueError(
+                "composite detector has no usable sub-detectors after filtering."
+            )
+        return CompositeDetector(
+            sub_detectors=sub_specs,
+            count=count,
+            window_seconds=window_seconds,
+            bin_seconds=weights.bin_seconds,
+            min_score=weights.min_score,
         )
     raise ValueError(
         f"Unknown detector '{name}'. Available: {', '.join(AVAILABLE_DETECTORS)}. "

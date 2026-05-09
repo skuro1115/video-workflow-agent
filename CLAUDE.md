@@ -6,12 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Long-form video → hotspot detection → clip extraction pipeline. See [README.md](README.md) and [docs/project_overview.md](docs/project_overview.md) for the full goal.
 
-**Current state**: pipeline runs end-to-end with three detectors:
-- `even` — placeholder (evenly-spaced windows, score=0.5).
-- `audio_rms` — extracts mono PCM via ffmpeg, picks loudness peaks with NMS.
-- `comment_density` — bins live-chat messages by 10s, picks high-unique-user-count windows.
+**Current state**: pipeline runs end-to-end with 4 detectors:
+- `even` — placeholder (evenly-spaced windows, score=0.5)
+- `audio_rms` — extracts mono PCM via ffmpeg, picks loudness peaks with NMS
+- `comment_density` — bins live-chat messages, picks high-unique-user-count windows
+- `composite` — runs multiple sub-detectors, weighted-sum combines per-bin scores
 
-`--from-plan` re-export, `--debug` artefact dumps, and `--chat-log` are wired. Tests run via stdlib unittest. Real (not synthetic) video has not been tried yet — that's the next human-judgment step.
+`--from-plan`, `--debug`, `--chat-log`, `--weights`, `--interactive-weights`, `--list-detectors` are wired. Tests via stdlib unittest. Real (not synthetic) video has not been tried yet — that's the next human-judgment step.
 
 ## Common commands
 
@@ -45,11 +46,12 @@ Strict one-way module dependency, top to bottom:
 
 ```
 main.py (CLI)
-  → config.py (PipelineConfig dataclass)
-  → video_info.py     (ffprobe wrapper, exit codes 2-4)
-  → hotspot_detector.py (HotspotDetector ABC + 3 implementations + factory; exit 6/9/10)
-  → clip_planner.py   (HotspotCandidate → ClipPlan)
-  → clip_exporter.py  (ffmpeg encode, off by default; exit 5)
+  → score_weights.py    (Weights dataclass, load/save/interactive)
+  → config.py           (PipelineConfig dataclass)
+  → video_info.py       (ffprobe wrapper, exit 2-4)
+  → hotspot_detector.py (HotspotDetector ABC + 4 implementations + factory; exit 6/9/10)
+  → clip_planner.py     (HotspotCandidate → ClipPlan)
+  → clip_exporter.py    (ffmpeg encode, opt-in; exit 5)
 ```
 
 Detector contract:
@@ -62,11 +64,14 @@ Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`,
 
 ## Conventions worth knowing
 
-- **Subprocess to ffmpeg/ffprobe, no Python video bindings.** Done deliberately to keep `requirements.txt` empty. Don't add `ffmpeg-python`/`av`/`moviepy`/`numpy` without discussing — see [docs/tasks.md](docs/tasks.md) design log entry "音声 RMS 抽出は ffmpeg → PCM → Python で計算".
-- **`AudioRmsDetector` deliberately uses raw PCM, not ffmpeg `astats` text parsing.** astats output format is fragile across ffmpeg versions; PCM is rock-solid. Don't switch back without reading the design log.
-- **`--export-clips` is opt-in.** Default run only writes JSON. `--from-plan` implies `--export-clips`.
-- **All ffmpeg/ffprobe failures map to typed exceptions** (`FFprobeNotFoundError`, `FFprobeFailedError`, `FFmpegNotFoundError`, `AudioExtractionError`) → main maps to exit codes 2–10 (see [docs/workflow.md](docs/workflow.md)).
-- **Tests use stdlib `unittest` + `unittest.mock`.** No pytest dependency. Add new tests in the same style; run with `python -m unittest discover -s tests`.
+- **No Python video bindings.** Subprocess to `ffmpeg`/`ffprobe`. Don't add `ffmpeg-python`/`av`/`moviepy`/`numpy` without discussing the design log in [docs/tasks.md](docs/tasks.md).
+- **`AudioRmsDetector` uses raw PCM, not ffmpeg `astats` parsing.** Astats text format is fragile across ffmpeg versions; PCM is rock-solid. See design log.
+- **Score normalisation: min-max within each detector, then weighted sum.** RRF is on the roadmap as an alternative; don't change the current default without updating the design log.
+- **CompositeDetector skips bins with zero contribution.** A bin nobody scored is not a candidate, even with `min_score=0`. Don't relax this without thinking — it reintroduces a real bug.
+- **Single-candidate edge case: norm = 1.0, not 0.** When a sub-detector returns one candidate, min-max would degenerate to zero and silently drop it. The fallback is `if s_max <= s_min: norm = 1.0`. Don't remove the guard.
+- **`--export-clips` is opt-in.** `--from-plan` implies it; nothing else does.
+- **All ffmpeg/ffprobe failures map to typed exceptions** → main maps to exit codes 2–10 (see [docs/workflow.md](docs/workflow.md)).
+- **Tests use stdlib `unittest` + `unittest.mock`.** No pytest. `python -m unittest discover -s tests`.
 
 ## Repo / remote note
 

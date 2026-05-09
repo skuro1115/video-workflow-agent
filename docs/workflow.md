@@ -82,14 +82,26 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 
 `t` は動画頭からの秒数。プラットフォーム固有形式（Twitch chat replay / YouTube yt-dlp）からの変換アダプタは未実装（[docs/tasks.md](tasks.md) 参照）。
 
+### `--detector composite`（複数検出器の合成）
+
+`CompositeDetector`。`--weights <path>` または `--interactive-weights` で重み設定を渡す。
+
+1. 各サブ検出器を独立に走らせる（個別失敗は WARNING で握りつぶす）
+2. 各検出器のスコアを **その動画内で min-max 正規化** して [0, 1] に揃える
+3. `bin_seconds` 粒度の per-bin スコア配列を作り、各候補 (start, end, norm_score) を `weight × norm_score` で該当 bin に加算
+4. `sum(weight)` で割って合成スコア [0, 1] に正規化
+5. `min_score` 以上の bin から NMS で上位 K 個を選ぶ
+6. reason は寄与した検出器名 + 寄与量を `"composite: comment_density=2.00, audio_rms=0.36"` のように残す
+
+`--debug` で `composite_combined.json`（bin 別合成スコア）と `composite_subdetectors.json`（各検出器の素の出力）を吐く。
+
 ### 将来想定
 
 | 検出器 | 信号 | 実装案 |
 | --- | --- | --- |
-| `scenedetect` | フレーム差分 | PySceneDetect の `ContentDetector` でショット境界を取り、長いショットや切替の多い区間を候補に |
-| `transcript` | 字幕中の盛り上がり語 | Whisper 文字起こし → 笑い / 感嘆 / キーワードでスコアリング |
-| `llm` | 字幕の意味理解 | Whisper の出力を窓ごとに分割し、LLM に「面白さ」を 0..1 で採点させる |
-| `composite` | 複数検出器の合成 | weighted average / RRF |
+| `scenedetect` | フレーム差分 | PySceneDetect の `ContentDetector` |
+| `transcript` | 字幕中の盛り上がり語 | Whisper 文字起こし → 笑い / 感嘆 / キーワード |
+| `llm` | 字幕の意味理解 | Whisper 出力を窓ごとに LLM 採点 |
 | `chat_reaction` | 特定リアクション | 草 / 100 / `:Kappa:` / 絵文字カウント |
 
 実装する順序は [docs/tasks.md](tasks.md) 参照。
@@ -146,5 +158,5 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 | 音声抽出失敗（audio_rms） | exit 6 | `ffmpeg audio extraction failed: ...` |
 | `--from-plan` のファイル無し | exit 7 | `plan file not found: ...` |
 | `--from-plan` の JSON 不正 | exit 8 | `failed to parse plan ...` |
-| 検出器ビルド失敗 | exit 9 | `Unknown detector ...` / `comment_density detector requires --chat-log ...` |
+| 検出器ビルド失敗 / weights 不正 | exit 9 | `Unknown detector ...` / `weights file ...` |
 | chat-log ファイル無し | exit 10 | `Chat log not found: ...` |

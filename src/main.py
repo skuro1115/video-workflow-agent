@@ -1,6 +1,7 @@
 """CLI entrypoint for the video-workflow MVP pipeline.
 
-Two modes:
+Modes
+-----
 
 1. **Full pipeline** (default)
    ::
@@ -14,12 +15,19 @@ Two modes:
 2. **From-plan re-export**
    ::
 
-       python -m src.main --input samples/sample.mp4 --output output/ \\
+       python -m src.main --input video.mp4 --output output/ \\
                           --from-plan output/clip_plan.json
 
    Skips probe + detection + planning; reads the plan JSON directly and runs
    only the export step. Useful when a human has reviewed and edited the plan
    before encoding.
+
+3. **List detectors**
+   ::
+
+       python -m src.main --list-detectors
+
+   Prints the registered detector names and exits.
 
 Detector selection
 ------------------
@@ -29,9 +37,11 @@ Detector selection
 - ``even``            placeholder (evenly-spaced windows)
 - ``audio_rms``       audio loudness peaks (requires ffmpeg)
 - ``comment_density`` live-chat density peaks (requires ``--chat-log <path>``)
+- ``composite``       weighted combination of multiple sub-detectors. Requires
+                      either ``--weights <path>`` or ``--interactive-weights``.
 
 Pass ``--debug`` to write detector intermediate artefacts (raw RMS series,
-comment density bins) into ``<output>/debug/``.
+combined per-bin score, comment density bins) into ``<output>/debug/``.
 """
 from __future__ import annotations
 
@@ -44,6 +54,14 @@ from .clip_exporter import FFmpegNotFoundError, export_clips
 from .clip_planner import ClipPlan, plan_clips
 from .config import PipelineConfig
 from .hotspot_detector import AVAILABLE_DETECTORS, AudioExtractionError, build_detector
+from .score_weights import (
+    Weights,
+    WeightsConfigError,
+    default_weights,
+    interactive_weights,
+    load_weights,
+    maybe_save_interactive,
+)
 from .video_info import FFprobeFailedError, FFprobeNotFoundError, probe
 
 
@@ -75,8 +93,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Long-form video → hotspot → clip pipeline (MVP)",
     )
-    p.add_argument("--input", required=True, type=Path, help="Path to input video")
-    p.add_argument("--output", required=True, type=Path, help="Output directory")
+    p.add_argument(
+        "--list-detectors", action="store_true",
+        help="Print registered detector names and exit.",
+    )
+    p.add_argument("--input", type=Path, help="Path to input video")
+    p.add_argument("--output", type=Path, help="Output directory")
     p.add_argument(
         "--detector", default="even",
         help="Hotspot detector name. Available: " + ", ".join(AVAILABLE_DETECTORS),
@@ -105,7 +127,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--chat-log", type=Path, default=None,
         help="Path to a chat-log JSON for the comment_density detector.",
     )
+    p.add_argument(
+        "--weights", type=Path, default=None,
+        help="Path to a JSON weights file for the composite detector.",
+    )
+    p.add_argument(
+        "--interactive-weights", action="store_true",
+        help="Prompt on stdin for composite-detector weights "
+             "(implies --detector composite). Optionally saves to a file.",
+    )
     return p.parse_args(argv)
+
+
+def _resolve_weights(args: argparse.Namespace) -> Weights | None:
+    """Decide which Weights object (if any) the run should use."""
+    if args.weights is not None:
+        try:
+            return load_weights(args.weights)
+        except WeightsConfigError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(9)
+    if args.interactive_weights:
+        defaults = default_weights()
+        # Restrict prompt to detectors that actually exist (excluding 'composite' itself).
+        available = [n for n in AVAILABLE_DETECTORS if n != "composite"]
+        weights = interactive_weights(available, defaults=defaults)
+        # Best-effort save; ignore IO errors so the pipeline still proceeds.
+        try:
+            maybe_save_interactive(weights)
+        except OSError as e:
+            print(f"WARNING: could not save weights: {e}", file=sys.stderr)
+        return weights
+    return None
 
 
 def _run_full_pipeline(
@@ -113,6 +166,7 @@ def _run_full_pipeline(
     *,
     debug: bool,
     chat_log_path: Path | None,
+    weights: Weights | None,
 ) -> int:
     print(f"[1/4] Probing video: {cfg.input_path}")
     try:
@@ -140,6 +194,7 @@ def _run_full_pipeline(
             cfg.candidate_count,
             cfg.candidate_duration,
             chat_log_path=chat_log_path,
+            weights=weights,
         )
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -226,19 +281,45 @@ def run(
     from_plan: Path | None,
     debug: bool,
     chat_log_path: Path | None,
+    weights: Weights | None,
 ) -> int:
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     if from_plan is not None:
         return _run_from_plan(cfg, from_plan)
-    return _run_full_pipeline(cfg, debug=debug, chat_log_path=chat_log_path)
+    return _run_full_pipeline(
+        cfg,
+        debug=debug,
+        chat_log_path=chat_log_path,
+        weights=weights,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if args.list_detectors:
+        for name in AVAILABLE_DETECTORS:
+            print(name)
+        return 0
+
+    if args.input is None or args.output is None:
+        print("ERROR: --input and --output are required (unless --list-detectors).", file=sys.stderr)
+        return 1
+
+    detector_name = args.detector
+    if args.interactive_weights and detector_name != "composite":
+        print(
+            "INFO: --interactive-weights given; switching --detector to 'composite'.",
+            file=sys.stderr,
+        )
+        detector_name = "composite"
+
+    weights = _resolve_weights(args)
+
     cfg = PipelineConfig(
         input_path=args.input,
         output_dir=args.output,
-        detector=args.detector,
+        detector=detector_name,
         candidate_count=args.candidates,
         candidate_duration=args.window,
         min_clip_duration=args.min_duration,
@@ -250,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         from_plan=args.from_plan,
         debug=args.debug,
         chat_log_path=args.chat_log,
+        weights=weights,
     )
 
 

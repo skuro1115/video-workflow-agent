@@ -18,9 +18,12 @@ from unittest.mock import patch
 from src.hotspot_detector import (
     AudioRmsDetector,
     CommentDensityDetector,
+    CompositeDetector,
     EvenSamplingDetector,
+    SubDetectorSpec,
     build_detector,
 )
+from src.score_weights import DetectorWeight, Weights
 
 
 class EvenSamplingDetectorTests(unittest.TestCase):
@@ -172,6 +175,22 @@ class FactoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_detector("comment_density", count=3, window_seconds=20.0)
 
+    def test_composite_requires_weights(self) -> None:
+        with self.assertRaises(ValueError):
+            build_detector("composite", count=3, window_seconds=20.0)
+
+    def test_build_composite_filters_unknown_subdetectors(self) -> None:
+        weights = Weights(detectors=[
+            DetectorWeight("audio_rms", 1.0),
+            DetectorWeight("nonexistent", 1.0),
+        ])
+        det = build_detector(
+            "composite", count=3, window_seconds=20.0, weights=weights,
+        )
+        self.assertIsInstance(det, CompositeDetector)
+        self.assertEqual(len(det.sub_detectors), 1)
+        self.assertEqual(det.sub_detectors[0].name, "audio_rms")
+
 
 class CommentDensityDetectorTests(unittest.TestCase):
     def _write_chat(self, messages: list[dict]) -> Path:
@@ -246,6 +265,105 @@ class CommentDensityDetectorTests(unittest.TestCase):
             )
         finally:
             path.unlink()
+
+
+class CompositeDetectorTests(unittest.TestCase):
+    """Composite uses canned sub-detectors (FakeDetector) so no ffmpeg/IO."""
+
+    class _FakeDetector(EvenSamplingDetector):
+        """Returns a fixed candidate list regardless of duration."""
+        def __init__(self, fixed):
+            self._fixed = fixed
+        def detect(self, *, input_path, duration, debug_dir=None):
+            return list(self._fixed)
+
+    def _make(self, weights_and_cands):
+        from src.hotspot_detector import HotspotCandidate
+        sub = []
+        for name, weight, cands in weights_and_cands:
+            cand_objs = [HotspotCandidate(*c) for c in cands]
+            sub.append(SubDetectorSpec(
+                name=name,
+                detector=self._FakeDetector(cand_objs),
+                weight=weight,
+            ))
+        return sub
+
+    def test_agreement_boosts_score(self) -> None:
+        # Both detectors agree on a peak around t=60. The top pick must
+        # overlap that region and credit both contributors.
+        sub = self._make([
+            ("d1", 1.0, [(50.0, 70.0, 1.0, "x"), (10.0, 30.0, 0.3, "y")]),
+            ("d2", 1.0, [(55.0, 65.0, 1.0, "x"), (90.0, 100.0, 0.5, "y")]),
+        ])
+        det = CompositeDetector(
+            sub, count=2, window_seconds=15.0, bin_seconds=1.0,
+        )
+        result = det.detect(input_path=Path("x"), duration=120.0)
+        self.assertGreater(len(result), 0)
+        top = max(result, key=lambda c: c.score)
+        # Top pick window should overlap t=60.
+        self.assertLessEqual(top.start, 60.0)
+        self.assertGreaterEqual(top.end, 60.0)
+        # And both detectors' names must appear in its reason.
+        self.assertIn("d1", top.reason)
+        self.assertIn("d2", top.reason)
+
+    def test_zero_weight_excluded(self) -> None:
+        # d2's region (0–10) must NOT show up as a pick, since its weight=0.
+        # All picks must land within d1's region (50–70).
+        sub = self._make([
+            ("d1", 1.0, [(50.0, 70.0, 1.0, "x")]),
+            ("d2", 0.0, [(0.0, 10.0, 1.0, "y")]),
+        ])
+        det = CompositeDetector(
+            sub, count=3, window_seconds=15.0, bin_seconds=1.0,
+        )
+        result = det.detect(input_path=Path("x"), duration=120.0)
+        self.assertGreater(len(result), 0)
+        for c in result:
+            mid = (c.start + c.end) / 2
+            self.assertGreater(mid, 30.0,
+                f"pick at {mid} leaked into the disabled-detector region")
+            self.assertNotIn("d2", c.reason)
+
+    def test_min_score_threshold(self) -> None:
+        # The 0.3-score candidate region (t=10-30) must be excluded by the
+        # high min_score; only the high-score region (t=50-70) survives.
+        sub = self._make([
+            ("d1", 1.0, [(50.0, 70.0, 1.0, "x"), (10.0, 30.0, 0.3, "y")]),
+        ])
+        det = CompositeDetector(
+            sub, count=5, window_seconds=25.0, bin_seconds=1.0,
+            min_score=0.95,
+        )
+        result = det.detect(input_path=Path("x"), duration=120.0)
+        # window_seconds=25 > 20s peak → exactly one pick fits.
+        self.assertEqual(len(result), 1)
+        # And it lands in the high-score region.
+        mid = (result[0].start + result[0].end) / 2
+        self.assertGreater(mid, 40.0)
+        self.assertLess(mid, 80.0)
+
+    def test_subdetector_failure_is_skipped(self) -> None:
+        from src.hotspot_detector import HotspotCandidate
+
+        class Broken(EvenSamplingDetector):
+            def __init__(self): pass
+            def detect(self, **kw):
+                raise RuntimeError("boom")
+
+        good = self._FakeDetector([HotspotCandidate(50.0, 70.0, 1.0, "x")])
+        sub = [
+            SubDetectorSpec("broken", Broken(), 1.0),
+            SubDetectorSpec("good", good, 1.0),
+        ]
+        det = CompositeDetector(
+            sub, count=1, window_seconds=15.0, bin_seconds=1.0,
+        )
+        result = det.detect(input_path=Path("x"), duration=120.0)
+        self.assertEqual(len(result), 1)
+        self.assertIn("good", result[0].reason)
 
 
 if __name__ == "__main__":
