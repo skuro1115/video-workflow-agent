@@ -60,7 +60,7 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
     -> list[HotspotCandidate]
 ```
 
-Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`, `clip_plan.json`, `clip_export_result.json`, `debug/audio_rms.json`) so any stage can be re-run independently. See [docs/architecture.md](docs/architecture.md) for the rationale.
+Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`, `clip_plan.json`, `clip_export_result.json`, `debug/audio_rms.json`, `debug/comment_density.json`, `debug/composite_combined.json`, `debug/composite_subdetectors.json`) so any stage can be re-run independently. Field-level reference: [docs/schemas.md](docs/schemas.md) — keep in sync when changing any dataclass. See [docs/architecture.md](docs/architecture.md) for the rationale.
 
 ## Conventions worth knowing
 
@@ -75,4 +75,4 @@ Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`,
 
 ## Repo / remote note
 
-Local directory is `video-workflow/` but the intended GitHub remote (per `docs.md`) is `video-workflow-agent`. No `git init` has been run yet. Confirm with the user before pushing or renaming.
+Local directory is `video-workflow/`, GitHub remote is [skuro1115/video-workflow-agent](https://github.com/skuro1115/video-workflow-agent). `main` tracks `origin/main`. CI is wired in [.github/workflows/test.yml](.github/workflows/test.yml) — runs the unittest suite on Python 3.11/3.12 with ffmpeg installed, on every push to main and every PR.

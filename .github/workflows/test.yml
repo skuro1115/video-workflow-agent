@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # ffmpeg / ffprobe are runtime deps for the audio_rms detector and the
+      # exporter. Tests mock subprocess calls, so this is belt-and-suspenders
+      # — keeps end-to-end smoke tests cheap to add later.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Run unittest
+        run: python -m unittest discover -s tests -v
