@@ -46,13 +46,21 @@
 - [x] `.gitignore` 整理（dead な `!output/.gitkeep` 行を削除、`output/` 全体を ignore に統一）
 - [x] `output/.gitkeep` 削除（パイプラインが実行時に作成するので tracking 不要）
 
+### 第4セッション-a（検出結果の機械的評価）
+- [x] [scripts/eval.py](../scripts/eval.py): `hotspot_candidates.json` を `expected.json`（正解ピーク）と突き合わせて `hit_rate` / `precision` / 個別の miss を出すスクリプト
+- [x] expected.json スキーマ確定: `t_range` 形式（範囲）と `t + tolerance` 形式の両対応
+- [x] [samples/varying.expected.json](../samples/varying.expected.json): 合成 2 分動画用の正解ピーク（`.gitignore` の例外指定で commit）
+- [x] `tests/test_eval.py`: Peak 解釈 / overlap 判定 / loader / summary フォーマットの 17 テスト
+- [x] 合成動画での 0→100 検証: `audio_rms` で 3/3 ピーク捕捉・100% precision を確認
+
 ## 未完了 / 次にやること
 
 ### 優先度: 高（次のセッションで触る想定）
 
-- [ ] 実動画での end-to-end 動作確認（合成2分動画でしか試していない。実配信アーカイブで挙動を見る）
-- [ ] `audio_rms` のチューニング: NMS gap、bin 秒数、score 正規化のレンジを実動画でキャリブレーション
-- [ ] `--config <path>` で YAML/TOML 読み込み（CLI フラグが増えてきたら）
+- [ ] 実動画での end-to-end 動作確認（合成2分動画 + Big Buck Bunny 10s 以外の、実配信アーカイブで挙動を見る）
+- [ ] `audio_rms` のチューニング: NMS gap、bin 秒数、score 正規化のレンジを実動画でキャリブレーション。`scripts/eval.py` で前後比較
+- [ ] `--config <path>` で TOML 読み込み（CLI フラグが増えてきた。`tomllib` は標準ライブラリなので追加依存ゼロ）
+- [ ] 実配信向けの正解 expected.json を 1〜2 本作る（手作業で peak をマーク、`scripts/eval.py` の対象を増やす）
 
 ### 優先度: 中（検出器の本実装）
 

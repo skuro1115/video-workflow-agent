@@ -10,6 +10,7 @@ output/
 samples/*
 !samples/.gitkeep
 !samples/chat_log.example.json
+!samples/*.expected.json
 
 # OS / editor
 .DS_Store

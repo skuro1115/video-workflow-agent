@@ -1,0 +1,10 @@
+{
+  "video": "samples/varying.mp4",
+  "duration": 120.0,
+  "notes": "Synthetic 2-min fixture from CLAUDE.md. testsrc video + aevalsrc audio with three planted bursts above the -25 dBFS noise floor.",
+  "peaks": [
+    {"t_range": [15.0, 20.0], "label": "burst 1: sine 440Hz @ 0.7 amplitude"},
+    {"t_range": [55.0, 65.0], "label": "burst 2: sine 880Hz @ 0.9 amplitude (loudest)"},
+    {"t_range": [90.0, 95.0], "label": "burst 3: sine 660Hz @ 0.6 amplitude"}
+  ]
+}

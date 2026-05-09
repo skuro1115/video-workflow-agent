@@ -36,6 +36,11 @@ ffmpeg -y -f lavfi -i testsrc=duration=120:size=320x240:rate=30 \
 
 # Tests (no install needed)
 python -m unittest discover -s tests
+
+# Evaluate a run against a hand-curated expected.json (planted peaks)
+python -m scripts.eval \
+    --hotspots output/hotspot_candidates.json \
+    --expected samples/varying.expected.json
 ```
 
 External requirement: `ffmpeg` and `ffprobe` on PATH. Zero Python deps.
