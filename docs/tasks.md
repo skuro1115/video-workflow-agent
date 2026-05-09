@@ -39,6 +39,13 @@
 - [x] `CompositeDetector` / `score_weights` の unittest（合意ブースト / 重み 0 除外 / 閾値 / 部分失敗）
 - [x] 既知バグ修正: 単一候補時の min-max 正規化が 0 になる件、寄与 0 bin が NMS に拾われる件
 
+### 第3セッション-c（メタワーク: AI 駆動開発のための土台整備）
+- [x] GitHub Actions CI ([.github/workflows/test.yml](../.github/workflows/test.yml)): Python 3.11/3.12 + ffmpeg で `unittest discover` を push/PR で自動実行
+- [x] [docs/schemas.md](schemas.md): JSON 出力契約のフィールド単位リファレンス（dataclass 変更時の同期ルールを CLAUDE.md に追記）
+- [x] CLAUDE.md の remote/CI note を更新（git remote 確定、`main` の upstream 設定、CI 場所を明記）
+- [x] `.gitignore` 整理（dead な `!output/.gitkeep` 行を削除、`output/` 全体を ignore に統一）
+- [x] `output/.gitkeep` 削除（パイプラインが実行時に作成するので tracking 不要）
+
 ## 未完了 / 次にやること
 
 ### 優先度: 高（次のセッションで触る想定）

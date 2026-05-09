@@ -5,9 +5,8 @@ __pycache__/
 venv/
 .env
 
-# Pipeline outputs — keep dirs, ignore contents.
-output/*
-!output/.gitkeep
+# Pipeline outputs — keep dirs, ignore contents. Created on demand at runtime.
+output/
 samples/*
 !samples/.gitkeep
 !samples/chat_log.example.json
