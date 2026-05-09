@@ -106,6 +106,33 @@
 
 ---
 
+## `output/run_timing.json`
+
+パイプライン実行の段階別経過時間。エラー時にも書き出される（部分的な計測でも debug に有用）。
+
+```json
+{
+  "stages": [
+    {"name": "probe",  "elapsed_seconds": 0.42},
+    {"name": "detect", "elapsed_seconds": 12.31, "detector": "audio_rms"},
+    {"name": "plan",   "elapsed_seconds": 0.001},
+    {"name": "export", "elapsed_seconds": 8.42, "clips": 6}
+  ],
+  "total_seconds": 21.151
+}
+```
+
+| フィールド | 型 | 意味 |
+| --- | --- | --- |
+| `stages[].name` | string | `probe` / `detect` / `plan` / `export` / `load_plan` のいずれか |
+| `stages[].elapsed_seconds` | float | その段階の経過時間（秒） |
+| `stages[].*` | varies | 段階特有のメタ情報（`detect` なら `detector`、`export` なら `clips` 数） |
+| `total_seconds` | float | 全段階の合計（オーバーヘッドは含まない） |
+
+検出器のチューニングや並列化判断の指標として使う。連続実行で `detect` 時間が伸びていないか、`export` がボトルネックになっていないか等を見る。
+
+---
+
 ## `output/clip_export_result.json`
 
 ステージ4（書き出し）の出力。`--export-clips` 指定時のみ生成。失敗してもパイプライン全体は継続するため、**個別の失敗もここに残す**。

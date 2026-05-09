@@ -54,6 +54,7 @@ from .clip_exporter import FFmpegNotFoundError, export_clips
 from .clip_planner import ClipPlan, plan_clips
 from .config import PipelineConfig
 from .hotspot_detector import AVAILABLE_DETECTORS, AudioExtractionError, build_detector
+from .run_timer import RunTimer
 from .score_weights import (
     Weights,
     WeightsConfigError,
@@ -167,10 +168,12 @@ def _run_full_pipeline(
     debug: bool,
     chat_log_path: Path | None,
     weights: Weights | None,
+    timer: RunTimer,
 ) -> int:
     print(f"[1/4] Probing video: {cfg.input_path}")
     try:
-        info = probe(cfg.input_path)
+        with timer.stage("probe"):
+            info = probe(cfg.input_path)
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
@@ -201,11 +204,12 @@ def _run_full_pipeline(
         return 9
     debug_dir = (cfg.output_dir / "debug") if debug else None
     try:
-        candidates = detector.detect(
-            input_path=cfg.input_path,
-            duration=info.duration,
-            debug_dir=debug_dir,
-        )
+        with timer.stage("detect", detector=cfg.detector):
+            candidates = detector.detect(
+                input_path=cfg.input_path,
+                duration=info.duration,
+                debug_dir=debug_dir,
+            )
     except AudioExtractionError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 6
@@ -219,11 +223,12 @@ def _run_full_pipeline(
     print(f"      {len(candidates)} candidates")
 
     print("[3/4] Planning clips")
-    plans = plan_clips(
-        candidates,
-        min_duration=cfg.min_clip_duration,
-        max_duration=cfg.max_clip_duration,
-    )
+    with timer.stage("plan"):
+        plans = plan_clips(
+            candidates,
+            min_duration=cfg.min_clip_duration,
+            max_duration=cfg.max_clip_duration,
+        )
     _write_json(
         cfg.output_dir / "clip_plan.json",
         [p.to_dict() for p in plans],
@@ -231,22 +236,23 @@ def _run_full_pipeline(
     print(f"      {len(plans)} clips planned")
 
     if cfg.export_clips:
-        return _run_export(cfg, plans)
+        return _run_export(cfg, plans, timer=timer)
     print("[4/4] Skipped export (pass --export-clips to cut actual clips)")
     print(f"Done. Output: {cfg.output_dir}")
     return 0
 
 
-def _run_export(cfg: PipelineConfig, plans: list[ClipPlan]) -> int:
+def _run_export(cfg: PipelineConfig, plans: list[ClipPlan], *, timer: RunTimer) -> int:
     print("[4/4] Exporting clips with ffmpeg")
     try:
-        results = export_clips(
-            input_path=cfg.input_path,
-            output_dir=cfg.output_dir / "clips",
-            plans=plans,
-            video_codec=cfg.video_codec,
-            audio_codec=cfg.audio_codec,
-        )
+        with timer.stage("export", clips=len(plans)):
+            results = export_clips(
+                input_path=cfg.input_path,
+                output_dir=cfg.output_dir / "clips",
+                plans=plans,
+                video_codec=cfg.video_codec,
+                audio_codec=cfg.audio_codec,
+            )
     except FFmpegNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 5
@@ -257,7 +263,7 @@ def _run_export(cfg: PipelineConfig, plans: list[ClipPlan]) -> int:
     return 0
 
 
-def _run_from_plan(cfg: PipelineConfig, plan_path: Path) -> int:
+def _run_from_plan(cfg: PipelineConfig, plan_path: Path, *, timer: RunTimer) -> int:
     print(f"[from-plan] Loading: {plan_path}")
     if not plan_path.exists():
         print(f"ERROR: plan file not found: {plan_path}", file=sys.stderr)
@@ -266,13 +272,14 @@ def _run_from_plan(cfg: PipelineConfig, plan_path: Path) -> int:
         print(f"ERROR: Input video not found: {cfg.input_path}", file=sys.stderr)
         return 2
     try:
-        plans = _load_plan(plan_path)
+        with timer.stage("load_plan"):
+            plans = _load_plan(plan_path)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
         print(f"ERROR: failed to parse plan {plan_path}: {e}", file=sys.stderr)
         return 8
     print(f"            {len(plans)} clips loaded")
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    return _run_export(cfg, plans)
+    return _run_export(cfg, plans, timer=timer)
 
 
 def run(
@@ -284,14 +291,25 @@ def run(
     weights: Weights | None,
 ) -> int:
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    if from_plan is not None:
-        return _run_from_plan(cfg, from_plan)
-    return _run_full_pipeline(
-        cfg,
-        debug=debug,
-        chat_log_path=chat_log_path,
-        weights=weights,
-    )
+    timer = RunTimer()
+    try:
+        if from_plan is not None:
+            return _run_from_plan(cfg, from_plan, timer=timer)
+        return _run_full_pipeline(
+            cfg,
+            debug=debug,
+            chat_log_path=chat_log_path,
+            weights=weights,
+            timer=timer,
+        )
+    finally:
+        # Always emit timing — even on error returns and exceptions — so a
+        # slow probe / detect can be diagnosed from the artefact.
+        if timer.stages:
+            try:
+                _write_json(cfg.output_dir / "run_timing.json", timer.to_dict())
+            except OSError:
+                pass  # best-effort — don't mask the original error
 
 
 def main(argv: list[str] | None = None) -> int:

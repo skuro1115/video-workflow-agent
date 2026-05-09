@@ -65,7 +65,7 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
     -> list[HotspotCandidate]
 ```
 
-Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`, `clip_plan.json`, `clip_export_result.json`, `debug/audio_rms.json`, `debug/comment_density.json`, `debug/composite_combined.json`, `debug/composite_subdetectors.json`) so any stage can be re-run independently. Field-level reference: [docs/schemas.md](docs/schemas.md) — keep in sync when changing any dataclass. See [docs/architecture.md](docs/architecture.md) for the rationale.
+Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`, `clip_plan.json`, `clip_export_result.json`, `run_timing.json`, `debug/audio_rms.json`, `debug/comment_density.json`, `debug/composite_combined.json`, `debug/composite_subdetectors.json`) so any stage can be re-run independently. Field-level reference: [docs/schemas.md](docs/schemas.md) — keep in sync when changing any dataclass. See [docs/architecture.md](docs/architecture.md) for the rationale.
 
 ## Conventions worth knowing
 

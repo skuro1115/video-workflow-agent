@@ -53,6 +53,13 @@
 - [x] `tests/test_eval.py`: Peak 解釈 / overlap 判定 / loader / summary フォーマットの 17 テスト
 - [x] 合成動画での 0→100 検証: `audio_rms` で 3/3 ピーク捕捉・100% precision を確認
 
+### 第4セッション-c（段階別実行時間の計測）
+- [x] [src/run_timer.py](../src/run_timer.py): `with timer.stage("probe"):` パターンで段階別の経過時間を集計する `RunTimer` クラス（標準ライブラリのみ）
+- [x] [src/main.py](../src/main.py) の各段階（probe / detect / plan / export / load_plan）を timer で wrap、`output/run_timing.json` に書き出し
+- [x] エラー時にも `run_timing.json` を書く（部分計測でも debug に有用、try/finally で保証）
+- [x] [docs/schemas.md](schemas.md) に `run_timing.json` のスキーマを追加
+- [x] tests/test_run_timer.py: 順序保持 / 例外時の記録 / extra フィールド / 経過時間範囲 / total 計算 の 6 テスト
+
 ### 第4セッション-b（合成方式: RRF オプション）
 - [x] `Weights.fusion`（`"weighted_sum"` or `"rrf"`）と `Weights.rrf_k` を追加。デフォルトは `weighted_sum` で完全な後方互換
 - [x] `CompositeDetector` を 2 モード対応に拡張: 既存の重み付き和に加え、Reciprocal Rank Fusion を実装
