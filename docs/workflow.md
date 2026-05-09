@@ -61,6 +61,27 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 
 `--debug` で `output/debug/audio_rms.json` に秒次 RMS 系列が dump され、調整に使える。
 
+### `--detector comment_density`（ライブチャット）
+
+`CommentDensityDetector`。`--chat-log <path>` で渡したチャットログ JSON を入力にする。
+
+1. メッセージを 10 秒 bin で集計、bin ごとの **ユニークユーザ数** を計算（1人がスパムで張り付いても1票扱い）
+2. 上位 N bin を NMS で間引き
+3. score は min-max 正規化値、reason は `"comment density: 7 unique users in 10s"`
+
+`--debug` で `output/debug/comment_density.json` に bin 別の `(t, unique_users, messages)` を吐く。
+
+チャットログ JSON 形式:
+
+```json
+[
+  { "t": 56.4, "user": "alice", "text": "うわあ" },
+  { "t": 57.0, "user": "bob",   "text": "wwww" }
+]
+```
+
+`t` は動画頭からの秒数。プラットフォーム固有形式（Twitch chat replay / YouTube yt-dlp）からの変換アダプタは未実装（[docs/tasks.md](tasks.md) 参照）。
+
 ### 将来想定
 
 | 検出器 | 信号 | 実装案 |
@@ -69,6 +90,7 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 | `transcript` | 字幕中の盛り上がり語 | Whisper 文字起こし → 笑い / 感嘆 / キーワードでスコアリング |
 | `llm` | 字幕の意味理解 | Whisper の出力を窓ごとに分割し、LLM に「面白さ」を 0..1 で採点させる |
 | `composite` | 複数検出器の合成 | weighted average / RRF |
+| `chat_reaction` | 特定リアクション | 草 / 100 / `:Kappa:` / 絵文字カウント |
 
 実装する順序は [docs/tasks.md](tasks.md) 参照。
 
@@ -124,3 +146,5 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 | 音声抽出失敗（audio_rms） | exit 6 | `ffmpeg audio extraction failed: ...` |
 | `--from-plan` のファイル無し | exit 7 | `plan file not found: ...` |
 | `--from-plan` の JSON 不正 | exit 8 | `failed to parse plan ...` |
+| 検出器ビルド失敗 | exit 9 | `Unknown detector ...` / `comment_density detector requires --chat-log ...` |
+| chat-log ファイル無し | exit 10 | `Chat log not found: ...` |

@@ -22,6 +22,14 @@
 - [x] `tests/` ディレクトリ + `unittest` ベースのテスト（追加依存ゼロで `python -m unittest` で走る）
 - [x] `--debug` フラグ: 検出器が `audio_rms.json` などの中間データを `output/debug/` に書く
 
+### 第3セッション-a（ライブチャット信号）
+- [x] `CommentDensityDetector` 実装: チャットログ JSON → bin 別ユニークユーザ数 → NMS top-K
+- [x] `--chat-log <path>` フラグ + 標準チャットログ JSON 形式の定義
+- [x] `AVAILABLE_DETECTORS` を公開定数化（後続の `--list-detectors` 等で利用予定）
+- [x] `samples/chat_log.example.json` を整備（`.gitignore` の例外指定で commit 可能に）
+- [x] `CommentDensityDetector` の unittest（密度検出 / ユニークユーザ vs スパマー / 空ログ / ファイル無し）
+- [x] `audio_rms`: ffmpeg「音声ストリーム無し」判定の marker を拡充
+
 ## 未完了 / 次にやること
 
 ### 優先度: 高（次のセッションで触る想定）
@@ -33,8 +41,9 @@
 ### 優先度: 中（検出器の本実装）
 
 - [ ] `scenedetect` 検出器: PySceneDetect 導入。`requirements.txt` の `scenedetect` を有効化
-- [ ] 複合検出器: 音声 RMS + シーン検出をスコア合成（重み付き平均 or RRF）
+- [ ] 複合検出器: 音声 RMS + コメント密度 + シーン検出をスコア合成（重み付き平均 or RRF）
 - [ ] スコアの正規化方針を確定（検出器ごとに [0, 1] に揃える、min-max vs z-score）
+- [ ] チャットログ変換アダプタ: Twitch chat replay / YouTube yt-dlp 出力 → 標準形式 JSON
 
 ### 優先度: 中（段階的要約）
 
