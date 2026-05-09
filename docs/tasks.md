@@ -30,6 +30,15 @@
 - [x] `CommentDensityDetector` の unittest（密度検出 / ユニークユーザ vs スパマー / 空ログ / ファイル無し）
 - [x] `audio_rms`: ffmpeg「音声ストリーム無し」判定の marker を拡充
 
+### 第3セッション-b（複合検出器 + 重み外部設定）
+- [x] `CompositeDetector` 実装: per-bin 加重合成 + 寄与検出器の reason への明記
+- [x] `src/score_weights.py`: 重み設定の dataclass / JSON load・save / 対話入力 UI
+- [x] `--weights <path>` / `--interactive-weights` フラグ
+- [x] `--list-detectors` フラグ
+- [x] [weights.example.json](../weights.example.json) の整備
+- [x] `CompositeDetector` / `score_weights` の unittest（合意ブースト / 重み 0 除外 / 閾値 / 部分失敗）
+- [x] 既知バグ修正: 単一候補時の min-max 正規化が 0 になる件、寄与 0 bin が NMS に拾われる件
+
 ## 未完了 / 次にやること
 
 ### 優先度: 高（次のセッションで触る想定）
@@ -41,9 +50,9 @@
 ### 優先度: 中（検出器の本実装）
 
 - [ ] `scenedetect` 検出器: PySceneDetect 導入。`requirements.txt` の `scenedetect` を有効化
-- [ ] 複合検出器: 音声 RMS + コメント密度 + シーン検出をスコア合成（重み付き平均 or RRF）
-- [ ] スコアの正規化方針を確定（検出器ごとに [0, 1] に揃える、min-max vs z-score）
+- [ ] スコア合成方式の高度化: 現状は per-bin 重み付き和（min-max 正規化 + 線形合成）。RRF（Reciprocal Rank Fusion）を選べるよう `weights.fusion: "weighted_sum" | "rrf"` を追加
 - [ ] チャットログ変換アダプタ: Twitch chat replay / YouTube yt-dlp 出力 → 標準形式 JSON
+- [ ] チャット詳細スコア: ユニークユーザ数だけでなく「草 / lol / w連投」など特定リアクションの数を信号に
 
 ### 優先度: 中（段階的要約）
 
@@ -61,6 +70,45 @@
 - [ ] SNS 投稿アダプタ（YouTube Shorts / X / TikTok）
 
 ## 設計判断ログ
+
+### 2026-05-09（第3セッション-b）
+
+**スコア正規化: min-max を採用（z-score / RRF は将来オプション）**
+- 候補:
+  1. min-max（各検出器のスコアを `(x-min)/(max-min)` で [0,1] に揃える）
+  2. z-score（平均 0 / σ 1 に正規化）
+  3. RRF（順位ベース合成、値そのものは捨てる）
+- 採用: (1)
+- 理由:
+  - 非エンジニアが重みを直感で設定できる（重み 1.0 なら最大寄与 1.0、重み 2.0 なら最大寄与 2.0）
+  - スコアが [0,1] に乗っているので `min_score` 閾値が直感的（「合成スコア 0.5 以上を採用」が自然）
+  - z-score は「σの何倍」になり閾値が解釈しにくい
+  - RRF は値情報を捨てる代わりに分布に頑健だが、小規模データでは順位差を過大評価しやすい
+- 既知の弱点:
+  - 外れ値1個で他のスコアが潰れる（優先度中タスクに RRF オプション追加で対処予定）
+  - 動画間でスコアを比較できない（同じ閾値でも動画ごとに意味が変わる）
+- トレードオフ: 単純さ優先。複数動画にまたがる絶対比較が必要になったら z-score を併設
+
+**重み設定の外部化: JSON ファイル + stdin 対話入力の両対応**
+- 候補:
+  1. CLI フラグだけ（`--weight-audio-rms 1.0 --weight-comment-density 2.0`）
+  2. JSON 設定ファイル（`--weights weights.json`）
+  3. 対話入力（`--interactive-weights`）
+  4. 上記の組み合わせ
+- 採用: (2) + (3) の併用
+- 理由:
+  - (1) は検出器が増えるとフラグが爆発する
+  - (2) は再現性が高い（CI 等で使える）。コミット可能
+  - (3) は非エンジニアが触りやすい。実行直前にチューニング可能。任意で (2) に保存できる
+- 単一検出器の場合は重み設定不要 → `--weights` は `--detector composite` のときだけ意味を持つ
+
+**`CompositeDetector` で空寄与 bin を NMS から除外（既知バグ修正）**
+- 初版では `combined[bin] >= min_score` で sort しており、`min_score=0`（デフォルト）のときに **どの検出器も寄与していない bin** が NMS で拾われる事故があった
+- 修正: `combined[bin] > 0 AND combined[bin] >= min_score` に変更。寄与ゼロ bin は無条件で除外
+
+**単一候補時の min-max 正規化を 1.0 に（既知バグ修正）**
+- 初版では候補が1つだけのとき `s_max == s_min` → 正規化値 0 → その検出器が寄与しない問題
+- 修正: `s_max <= s_min` のとき norm = 1.0（全候補を最大寄与として扱う）
 
 ### 2026-05-08（第2セッション）
 
