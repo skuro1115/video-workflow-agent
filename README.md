@@ -144,6 +144,7 @@ python -m scripts.eval \
 | `clip_plan.json` | 実際に切り出すクリップの計画（clip_id 付き） |
 | `clips/clip_NNN.mp4` | `--export-clips` / `--from-plan` 指定時に出力される実クリップ |
 | `clip_export_result.json` | 各 clip_id の export 成否ログ |
+| `run_timing.json` | 各段階の経過時間（probe / detect / plan / export）。エラー時にも書き出される |
 | `debug/audio_rms.json` | `--debug` + `--detector audio_rms` 時の秒次 RMS 系列 |
 
 ### CLI オプション
