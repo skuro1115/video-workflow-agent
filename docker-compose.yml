@@ -1,0 +1,24 @@
+# Convenience wrapper around the Dockerfile. Two services share the same
+# image:
+#   - app:   runs the pipeline. CLI args are forwarded.
+#   - tests: runs the unittest suite (overrides the entrypoint).
+#
+# Volumes are bind-mounts so input videos in samples/ and JSON output in
+# output/ stay on the host between runs.
+
+services:
+  app:
+    build: .
+    image: video-workflow:latest
+    volumes:
+      - ./samples:/app/samples
+      - ./output:/app/output
+      # Make user-edited weights / chat logs visible to the container.
+      - ./weights.json:/app/weights.json:ro
+      - ./settings.json:/app/settings.json:ro
+
+  tests:
+    image: video-workflow:latest
+    build: .
+    entrypoint: ["python", "-m", "unittest"]
+    command: ["discover", "-s", "tests", "-v"]

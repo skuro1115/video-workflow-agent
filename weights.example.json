@@ -6,6 +6,10 @@
     },
     {
       "name": "comment_density",
+      "weight": 1.0
+    },
+    {
+      "name": "comment_reaction",
       "weight": 2.0
     }
   ],

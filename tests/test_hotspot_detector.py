@@ -18,6 +18,7 @@ from unittest.mock import patch
 from src.hotspot_detector import (
     AudioRmsDetector,
     CommentDensityDetector,
+    CommentReactionDetector,
     CompositeDetector,
     EvenSamplingDetector,
     SubDetectorSpec,
@@ -174,6 +175,17 @@ class FactoryTests(unittest.TestCase):
     def test_comment_density_requires_chat_log(self) -> None:
         with self.assertRaises(ValueError):
             build_detector("comment_density", count=3, window_seconds=20.0)
+
+    def test_comment_reaction_requires_chat_log(self) -> None:
+        with self.assertRaises(ValueError):
+            build_detector("comment_reaction", count=3, window_seconds=20.0)
+
+    def test_build_comment_reaction(self) -> None:
+        det = build_detector(
+            "comment_reaction", count=3, window_seconds=20.0,
+            chat_log_path=Path("dummy.json"),
+        )
+        self.assertIsInstance(det, CommentReactionDetector)
 
     def test_composite_requires_weights(self) -> None:
         with self.assertRaises(ValueError):
@@ -459,6 +471,213 @@ class CompositeDetectorRrfTests(unittest.TestCase):
         result = det.detect(input_path=Path("x"), duration=120.0)
         self.assertEqual(len(result), 1)
         self.assertAlmostEqual(result[0].score, 1.0, places=2)
+
+
+class CommentReactionDetectorTests(unittest.TestCase):
+    """Reaction-token weighting on top of the chat-log signal."""
+
+    def _write_chat(self, messages: list[dict]) -> Path:
+        f = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8",
+        )
+        json.dump(messages, f, ensure_ascii=False)
+        f.close()
+        return Path(f.name)
+
+    def test_reactions_outscore_plain_density(self) -> None:
+        # Cluster A (t≈15): 8 unique users, all greetings (no reactions).
+        # Cluster B (t≈60): 4 unique users, all reactions.
+        # CommentDensityDetector would prefer A (more users); reaction
+        # detector must prefer B (only B has reactive content).
+        msgs = (
+            [{"t": 15.0 + 0.1 * i, "user": f"u{i}", "text": "hi"} for i in range(8)] +
+            [
+                {"t": 60.0, "user": "a", "text": "草"},
+                {"t": 60.5, "user": "b", "text": "wwww"},
+                {"t": 61.0, "user": "c", "text": "lol"},
+                {"t": 61.5, "user": "d", "text": "🤣"},
+            ]
+        )
+        path = self._write_chat(msgs)
+        try:
+            det = CommentReactionDetector(
+                count=2, window_seconds=20.0, chat_log_path=path,
+            )
+            result = det.detect(input_path=Path("dummy"), duration=120.0)
+        finally:
+            path.unlink()
+
+        self.assertGreater(len(result), 0)
+        top = max(result, key=lambda c: c.score)
+        center = (top.start + top.end) / 2
+        self.assertGreater(center, 50.0,
+            "reaction-only cluster (t≈60) should outrank greeting cluster (t≈15)")
+        self.assertLess(center, 70.0)
+        self.assertIn("audience reaction", top.reason)
+
+    def test_spammer_does_not_dominate(self) -> None:
+        # 1 spammer firing 50 reactive messages vs 5 unique users with 1 each.
+        # Per-user-best logic should make the 5-user burst outrank the spammer
+        # by a factor of ~5.
+        spam = [{"t": 10.0 + 0.05 * i, "user": "spam", "text": "草"} for i in range(50)]
+        real = [{"t": 60.0 + i * 0.5, "user": f"u{i}", "text": "lol"} for i in range(5)]
+        path = self._write_chat(spam + real)
+        try:
+            det = CommentReactionDetector(
+                count=2, window_seconds=15.0, chat_log_path=path,
+            )
+            result = det.detect(input_path=Path("dummy"), duration=120.0)
+        finally:
+            path.unlink()
+
+        self.assertEqual(len(result), 2)
+        sorted_by_score = sorted(result, key=lambda c: c.score, reverse=True)
+        top_center = (sorted_by_score[0].start + sorted_by_score[0].end) / 2
+        self.assertGreater(top_center, 50.0,
+            "5-user burst should beat 1-spammer flood")
+        self.assertLess(top_center, 70.0)
+
+    def test_w_run_matches_both_widths(self) -> None:
+        msgs = [
+            {"t": 30.0, "user": "a", "text": "ｗｗｗｗ"},   # fullwidth
+            {"t": 30.5, "user": "b", "text": "wwww"},      # halfwidth
+            {"t": 31.0, "user": "c", "text": "ww"},        # short run still counts
+            # And a control bin with non-reactive plain text:
+            {"t": 80.0, "user": "x", "text": "test"},
+            {"t": 80.5, "user": "y", "text": "noreact"},
+        ]
+        path = self._write_chat(msgs)
+        try:
+            det = CommentReactionDetector(
+                count=2, window_seconds=10.0, chat_log_path=path,
+            )
+            result = det.detect(input_path=Path("dummy"), duration=120.0)
+        finally:
+            path.unlink()
+
+        # Only the w-run cluster (t=30) is reactive; control bin (t=80) is silent.
+        self.assertEqual(len(result), 1)
+        center = (result[0].start + result[0].end) / 2
+        self.assertGreater(center, 25.0)
+        self.assertLess(center, 40.0)
+        self.assertIn("w連投", result[0].reason)
+
+    def test_word_boundary_avoids_false_positive(self) -> None:
+        # "lol" must NOT match inside "lolly" or "blowfish".
+        # If boundary matching is broken, this bin would be picked.
+        msgs = [
+            {"t": 10.0, "user": "a", "text": "lolly"},
+            {"t": 10.5, "user": "b", "text": "blowfish"},
+            {"t": 11.0, "user": "c", "text": "wowza"},  # "wow" inside another word
+        ]
+        path = self._write_chat(msgs)
+        try:
+            det = CommentReactionDetector(
+                count=1, window_seconds=10.0, chat_log_path=path,
+            )
+            result = det.detect(input_path=Path("dummy"), duration=60.0)
+        finally:
+            path.unlink()
+        self.assertEqual(result, [],
+            "ASCII tokens must use word-boundary matching, not raw substring")
+
+    def test_per_message_strength_capped(self) -> None:
+        # A single message stuffed with many reactions should not dominate
+        # an entire bin — its strength is capped at MAX_PER_MESSAGE.
+        msgs = [
+            {"t": 10.0, "user": "stuffer", "text": "草 lol wow omg やばい 🤣 wwww すごい"},
+            # Compare against a bin where 5 unique users each typed one reaction.
+            {"t": 60.0, "user": "a", "text": "草"},
+            {"t": 60.5, "user": "b", "text": "lol"},
+            {"t": 61.0, "user": "c", "text": "wow"},
+            {"t": 61.5, "user": "d", "text": "草"},
+            {"t": 62.0, "user": "e", "text": "lol"},
+        ]
+        path = self._write_chat(msgs)
+        try:
+            det = CommentReactionDetector(
+                count=2, window_seconds=15.0, chat_log_path=path,
+            )
+            result = det.detect(input_path=Path("dummy"), duration=120.0)
+        finally:
+            path.unlink()
+
+        sorted_by_score = sorted(result, key=lambda c: c.score, reverse=True)
+        top_center = (sorted_by_score[0].start + sorted_by_score[0].end) / 2
+        # Bin score = sum of per-user max strengths (capped at MAX_PER_MESSAGE=3).
+        # Stuffer bin: 1 user × min(8,3) = 3.
+        # 5-user bin: 5 × 1 = 5. Should win.
+        self.assertGreater(top_center, 50.0,
+            "5-user single-reaction bin should beat 1-user reaction-stuffed bin")
+
+    def test_no_reactions_returns_empty(self) -> None:
+        msgs = [
+            {"t": 10.0, "user": "a", "text": "good morning"},
+            {"t": 20.0, "user": "b", "text": "hello there"},
+        ]
+        path = self._write_chat(msgs)
+        try:
+            det = CommentReactionDetector(
+                count=3, window_seconds=10.0, chat_log_path=path,
+            )
+            self.assertEqual(
+                det.detect(input_path=Path("dummy"), duration=60.0),
+                [],
+            )
+        finally:
+            path.unlink()
+
+    def test_missing_file_raises(self) -> None:
+        det = CommentReactionDetector(
+            count=3, window_seconds=10.0,
+            chat_log_path=Path("/nonexistent/chat.json"),
+        )
+        with self.assertRaises(FileNotFoundError):
+            det.detect(input_path=Path("dummy"), duration=60.0)
+
+    def test_reason_lists_top_tokens(self) -> None:
+        # 草 should win the count race.
+        msgs = (
+            [{"t": 10.0 + 0.1 * i, "user": f"u{i}", "text": "草"} for i in range(5)] +
+            [{"t": 10.5 + 0.1 * i, "user": f"v{i}", "text": "lol"} for i in range(2)]
+        )
+        path = self._write_chat(msgs)
+        try:
+            det = CommentReactionDetector(
+                count=1, window_seconds=10.0, chat_log_path=path,
+            )
+            result = det.detect(input_path=Path("dummy"), duration=60.0)
+        finally:
+            path.unlink()
+        self.assertEqual(len(result), 1)
+        # Reason should put 草 first (it has higher count).
+        reason = result[0].reason
+        self.assertIn("草", reason)
+        self.assertIn("lol", reason)
+        kusa_pos = reason.find("草")
+        lol_pos = reason.find("lol")
+        self.assertLess(kusa_pos, lol_pos,
+            "reason should list tokens by count descending (草 first)")
+
+    def test_custom_token_lists(self) -> None:
+        # Override defaults with a custom list — only "AYAYA" should match.
+        msgs = [
+            {"t": 10.0, "user": "a", "text": "草"},      # default would match, but disabled
+            {"t": 10.5, "user": "b", "text": "wwww"},   # default w-run still matches
+            {"t": 30.0, "user": "c", "text": "AYAYA"},  # custom token
+        ]
+        path = self._write_chat(msgs)
+        try:
+            det = CommentReactionDetector(
+                count=3, window_seconds=10.0, chat_log_path=path,
+                boundary_tokens=("AYAYA",),
+                plain_tokens=(),
+            )
+            result = det.detect(input_path=Path("dummy"), duration=60.0)
+        finally:
+            path.unlink()
+        # Two bins reactive: t=10 (wwww via w-run) and t=30 (AYAYA via custom).
+        self.assertEqual(len(result), 2)
 
 
 if __name__ == "__main__":

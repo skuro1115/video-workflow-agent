@@ -1,0 +1,34 @@
+{
+  "_comment_about_this_file": "全部入りの設定ファイル。このファイル1つを編集すれば、CLI フラグを毎回打たずに済む。コピーして settings.json を作り、自分の値に書き換えてから `python -m src.main --settings settings.json` で実行する。CLI フラグで指定された値はこのファイルの値より優先される。",
+
+  "input": "samples/sample.mp4",
+  "output": "output/",
+
+  "_comment_detector": "even / audio_rms / comment_density / comment_reaction / composite のいずれか。composite を選ぶと weights を見る。",
+  "detector": "composite",
+
+  "candidates": 6,
+  "window": 30,
+  "min_duration": 10,
+  "max_duration": 60,
+
+  "_comment_chat_log": "comment_density / comment_reaction / composite で使う。Twitch / YouTube ライブのチャットを samples/chat_log.example.json の形式に変換したもの。",
+  "chat_log": "samples/chat_log.example.json",
+
+  "_comment_export_clips": "true にすると ffmpeg で実エンコードまで走る。false ならプラン JSON だけ作って人間レビュー → --from-plan で個別 export。",
+  "export_clips": false,
+  "debug": true,
+
+  "_comment_weights": "composite 検出器の重み。weight=0 で検出器を無効化。fusion は weighted_sum か rrf。詳しくは docs/workflow.md。",
+  "weights": {
+    "detectors": [
+      { "name": "audio_rms",        "weight": 1.0 },
+      { "name": "comment_density",  "weight": 1.0 },
+      { "name": "comment_reaction", "weight": 2.0 }
+    ],
+    "fusion": "weighted_sum",
+    "bin_seconds": 1.0,
+    "min_score": 0.0,
+    "rrf_k": 60
+  }
+}

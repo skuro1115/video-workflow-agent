@@ -62,7 +62,9 @@ from .score_weights import (
     interactive_weights,
     load_weights,
     maybe_save_interactive,
+    parse_weights_dict,
 )
+from .settings_loader import SettingsLoadError, load_settings
 from .video_info import FFprobeFailedError, FFprobeNotFoundError, probe
 
 
@@ -90,9 +92,14 @@ def _load_plan(path: Path) -> list[ClipPlan]:
     return plans
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Long-form video → hotspot → clip pipeline (MVP)",
+    )
+    p.add_argument(
+        "--settings", type=Path, default=None,
+        help="Load common options from a single JSON file (see settings.example.json). "
+             "CLI flags override values in this file.",
     )
     p.add_argument(
         "--list-detectors", action="store_true",
@@ -151,11 +158,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Prompt on stdin for composite-detector weights "
              "(implies --detector composite). Optionally saves to a file.",
     )
-    return p.parse_args(argv)
+    return p
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI args, with optional ``--settings <path>`` pre-pass.
+
+    When ``--settings`` is given, the JSON file's values become the parser's
+    defaults, then the regular argparse run happens — so any CLI flag the
+    user typed still wins. The inline ``weights`` block (if present) is
+    stashed on the namespace as ``_inline_weights`` for ``_resolve_weights``
+    to consume.
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    args._inline_weights = None  # type: ignore[attr-defined]
+
+    if args.settings is None:
+        return args
+
+    try:
+        defaults, inline_weights = load_settings(args.settings)
+    except SettingsLoadError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(11)
+
+    # Re-build a parser, pre-seeded with the settings file's values, then
+    # re-parse so any CLI flag the user actually typed overrides them.
+    parser = _build_parser()
+    parser.set_defaults(**defaults)
+    args = parser.parse_args(argv)
+    args._inline_weights = inline_weights  # type: ignore[attr-defined]
+    return args
 
 
 def _resolve_weights(args: argparse.Namespace) -> Weights | None:
-    """Decide which Weights object (if any) the run should use."""
+    """Decide which Weights object (if any) the run should use.
+
+    Precedence (highest first):
+      1. ``--weights <path>``                     (explicit file on CLI)
+      2. ``--interactive-weights``                (stdin prompt)
+      3. inline ``weights`` block in --settings   (from settings.json)
+    """
     if args.weights is not None:
         try:
             return load_weights(args.weights)
@@ -173,6 +217,13 @@ def _resolve_weights(args: argparse.Namespace) -> Weights | None:
         except OSError as e:
             print(f"WARNING: could not save weights: {e}", file=sys.stderr)
         return weights
+    inline = getattr(args, "_inline_weights", None)
+    if inline is not None:
+        try:
+            return parse_weights_dict(inline, source=str(args.settings))
+        except WeightsConfigError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(9)
     return None
 
 

@@ -66,6 +66,7 @@
 | `even` | `"temporary placeholder: evenly sampled segment"` |
 | `audio_rms` | `"audio peak: -8.2 dBFS"` |
 | `comment_density` | `"comment density: 7 unique users in 10s"` |
+| `comment_reaction` | `"audience reaction: 12 hits across 8 users (top: 草×5, w連投×4, lol×3)"` |
 | `composite` | `"composite: comment_density=2.00, audio_rms=0.36"` |
 
 ---
@@ -161,6 +162,7 @@
 | --- | --- | --- |
 | `audio_rms.json` | `audio_rms` | `[{t, rms_db}, ...]` 秒単位 RMS 系列 |
 | `comment_density.json` | `comment_density` | `[{t, unique_users, messages}, ...]` 10秒 bin |
+| `comment_reaction.json` | `comment_reaction` | `[{t, score, unique_reactors, top_tokens}, ...]` 10秒 bin。`top_tokens` は `[[token, count], ...]` の上位5件 |
 | `composite_combined.json` | `composite` | `{fusion, rrf_k, bins: [{t, score}, ...]}` bin 別合成スコア（`fusion` は `"weighted_sum"` か `"rrf"`、`rrf_k` は RRF 使用時のみ） |
 | `composite_subdetectors.json` | `composite` | `{detector_name: [HotspotCandidate, ...]}` 各サブ検出器の素出力 |
 
@@ -168,7 +170,7 @@
 
 ## 入力 JSON
 
-### chat-log（`--chat-log <path>` で指定、`comment_density` 検出器の入力）
+### chat-log（`--chat-log <path>` で指定、`comment_density` / `comment_reaction` 検出器の入力）
 
 ```json
 [
