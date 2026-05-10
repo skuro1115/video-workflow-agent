@@ -80,7 +80,7 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 ]
 ```
 
-`t` は動画頭からの秒数。プラットフォーム固有形式（Twitch chat replay / YouTube yt-dlp）からの変換アダプタは未実装（[docs/tasks.md](tasks.md) 参照）。
+`t` は動画頭からの秒数。プラットフォーム固有形式（Twitch chat replay / YouTube `live_chat.json`）からの変換は [scripts/fetch.py](../scripts/fetch.py) が担当する。`python -m scripts.fetch --url <URL>` で動画もチャットも取得 → アプリ形式に変換まで一気に走る。`src.main --url <URL>` でも同等のフローが走り、結果がそのままパイプラインに流れる。
 
 ### `--detector composite`（複数検出器の合成）
 

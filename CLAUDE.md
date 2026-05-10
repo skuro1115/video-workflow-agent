@@ -12,7 +12,9 @@ Long-form video → hotspot detection → clip extraction pipeline. See [README.
 - `comment_density` — bins live-chat messages, picks high-unique-user-count windows
 - `composite` — runs multiple sub-detectors, weighted-sum combines per-bin scores
 
-`--from-plan`, `--debug`, `--chat-log`, `--weights`, `--interactive-weights`, `--list-detectors` are wired. Tests via stdlib unittest. Real (not synthetic) video has not been tried yet — that's the next human-judgment step.
+`--from-plan`, `--debug`, `--chat-log`, `--weights`, `--interactive-weights`, `--list-detectors`, `--url` are wired. Tests via stdlib unittest. Real (not synthetic) video has not been tried yet — that's the next human-judgment step.
+
+**Ingest** ([scripts/fetch.py](scripts/fetch.py)): URL → `<dir>/<name>.mp4` + `<dir>/<name>.chat.json` (app format). YouTube live archives use `yt-dlp --write-subs --sub-langs live_chat`; Twitch VODs use `chat-downloader` (yt-dlp doesn't extract Twitch chat). Triggered standalone (`python -m scripts.fetch --url ...`) or via `src.main --url ...` (lazy-imported so the core pipeline never touches yt-dlp). Exit codes 20–26 — see the module docstring.
 
 ## Common commands
 
@@ -41,9 +43,16 @@ python -m unittest discover -s tests
 python -m scripts.eval \
     --hotspots output/hotspot_candidates.json \
     --expected samples/varying.expected.json
+
+# Fetch from URL (YouTube live archive / Twitch VOD) → samples/
+python -m scripts.fetch --url <URL> --output samples/ --name liveA
+
+# One-shot: URL → fetch → full pipeline
+python -m src.main --url <URL> --output output/ --detector composite \
+    --weights weights.example.json
 ```
 
-External requirement: `ffmpeg` and `ffprobe` on PATH. Zero Python deps.
+External requirements: `ffmpeg` and `ffprobe` on PATH (always); `yt-dlp` and `chat-downloader` (only for `scripts/fetch.py` / `--url`, installed via `pip install -r requirements.txt`).
 
 ## Architecture
 
@@ -77,6 +86,8 @@ Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`,
 - **`--export-clips` is opt-in.** `--from-plan` implies it; nothing else does.
 - **All ffmpeg/ffprobe failures map to typed exceptions** → main maps to exit codes 2–10 (see [docs/workflow.md](docs/workflow.md)).
 - **Tests use stdlib `unittest` + `unittest.mock`.** No pytest. `python -m unittest discover -s tests`.
+- **Ingest deps are optional.** `scripts/fetch.py` is imported lazily inside `src/main.py` only when `--url` is set, so a minimal install (no `yt-dlp` / `chat-downloader`) still runs the full pipeline. Don't move that import to module top-level.
+- **Chat converters are pure functions.** `parse_youtube_live_chat_jsonl` / `parse_twitch_chat_json` take in-memory data, not paths. Keep them subprocess-free so `tests/test_fetch.py` runs without network or external CLIs.
 
 ## Repo / remote note
 

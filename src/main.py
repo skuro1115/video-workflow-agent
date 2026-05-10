@@ -101,6 +101,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--input", type=Path, help="Path to input video")
     p.add_argument("--output", type=Path, help="Output directory")
     p.add_argument(
+        "--url", default=None,
+        help="YouTube / Twitch URL — download via scripts.fetch first, then run "
+             "the pipeline on the resulting video and chat. Overrides --input "
+             "and --chat-log.",
+    )
+    p.add_argument(
+        "--fetch-dir", type=Path, default=Path("samples"),
+        help="Directory for --url downloads (default: samples/).",
+    )
+    p.add_argument(
+        "--fetch-name", default=None,
+        help="Basename for --url downloads (default: derived from URL).",
+    )
+    p.add_argument(
         "--detector", default="even",
         help="Hotspot detector name. Available: " + ", ".join(AVAILABLE_DETECTORS),
     )
@@ -320,8 +334,28 @@ def main(argv: list[str] | None = None) -> int:
             print(name)
         return 0
 
+    if args.url is not None:
+        # Lazy import — only the optional fetch step depends on yt-dlp /
+        # chat-downloader. Keep them out of the critical path so the core
+        # pipeline runs even if those deps aren't installed.
+        from scripts import fetch as _fetch
+        try:
+            video, chat = _fetch.fetch(args.url, args.fetch_dir, args.fetch_name)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 20
+        except _fetch.FetchError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return e.exit_code
+        args.input = video
+        if chat is not None:
+            args.chat_log = chat
+
     if args.input is None or args.output is None:
-        print("ERROR: --input and --output are required (unless --list-detectors).", file=sys.stderr)
+        print(
+            "ERROR: --input and --output are required (unless --list-detectors / --url).",
+            file=sys.stderr,
+        )
         return 1
 
     detector_name = args.detector
