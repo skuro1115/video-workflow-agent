@@ -91,3 +91,25 @@ mp4 files in output/clips/  ──→  output/clip_export_result.json
 - 字幕生成 → 段階間に新モジュール `transcribe.py` を挟み、`hotspot_detector` がその出力を読む
 - バッチ実行 → `main.py` の上に薄いランナー `runner.py` を載せる（main 自体は単発実行のまま）
 - Web UI / API → `main.run(cfg)` を関数として再利用、HTTP ハンドラから呼ぶ
+
+## ingest 層（`scripts/fetch.py`）
+
+URL → 動画 + チャット JSON への変換を担当する**前段アダプタ**。コアパイプライン（`src/`）には含めない。
+
+```
+URL ──┐
+      ├──→  scripts/fetch.py
+      │      ├─ download_video()         (yt-dlp; YouTube / Twitch 共通)
+      │      ├─ download_youtube_chat()  (yt-dlp --write-subs --sub-langs live_chat)
+      │      ├─ download_twitch_chat()   (chat-downloader)
+      │      ├─ parse_youtube_live_chat_jsonl()  ← pure 関数 (testable)
+      │      └─ parse_twitch_chat_json()         ← pure 関数 (testable)
+      ▼
+samples/<name>.mp4   +   samples/<name>.chat.json   ──→  既存パイプラインへ
+```
+
+設計原則:
+- **コアは `scripts.fetch` に依存しない**。`src/main.py` 側は `--url` が来たときだけ遅延 import するので、`pip install` していなくても本体は動く
+- **subprocess 呼び出しと変換ロジックを分離**。`download_*` は外部CLIラッパー、`parse_*` は in-memory データの pure 関数。これにより `tests/test_fetch.py` がネットワーク・外部CLI無しで完結する
+- **プラットフォームごとに最適なツール**: YouTube は yt-dlp（emoji shortcuts や author 情報まで取れる）、Twitch は `chat-downloader`（yt-dlp が Twitch チャット未対応のため）
+- **エラーは exit code 20–26 にマップ**して main の体系（2–10）と被らないようにする

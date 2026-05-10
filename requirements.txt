@@ -1,11 +1,15 @@
-# Runtime deps for the MVP pipeline.
+# Runtime deps.
 #
-# The current pipeline shells out to `ffmpeg` and `ffprobe`, so no Python
-# packages are strictly required. The libraries below are *planned* for
-# upcoming detectors / features — uncomment as they are wired in.
+# The core pipeline (probe → detect → plan → export) shells out to
+# `ffmpeg` / `ffprobe` and uses zero Python packages. The deps below are
+# only required by the optional `scripts/fetch.py` ingest step (URL →
+# video + chat JSON). The pipeline itself runs without them.
 
-# scenedetect>=0.6        # shot/scene-change based hotspot detection
-# faster-whisper>=1.0     # transcript-based hotspot scoring
-# openai>=1.40            # LLM-rated highlight selection
-# moviepy>=1.0            # in-process editing if shelling out is not enough
-# pydantic>=2.0           # if config grows beyond dataclasses
+yt-dlp>=2024.12.0          # YouTube / Twitch video + YouTube live-chat replay
+chat-downloader>=0.2.8     # Twitch VOD chat (yt-dlp does not extract it)
+
+# scenedetect>=0.6         # shot/scene-change based hotspot detection (planned)
+# faster-whisper>=1.0      # transcript-based hotspot scoring (planned)
+# openai>=1.40             # LLM-rated highlight selection (planned)
+# moviepy>=1.0             # in-process editing if shelling out is not enough
+# pydantic>=2.0            # if config grows beyond dataclasses

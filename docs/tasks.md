@@ -69,6 +69,15 @@
 - [x] tests: RRF 5 件 + score_weights JSON 6 件の追加（合計 70 件）
 - [x] 既存 `weights.json`（fusion フィールド無し）を読んでも `weighted_sum` として正常動作することを test で保証
 
+### 第5セッション-a（URL 取得自動化: ingest 層）
+- [x] [scripts/fetch.py](../scripts/fetch.py): URL → 動画 + チャット JSON（アプリ形式）の取得アダプタ
+- [x] YouTube ライブアーカイブ対応: `yt-dlp --write-subs --sub-langs live_chat` の `live_chat.json` (JSONL) を `[{t, user, text}]` に変換
+- [x] Twitch VOD 対応: `chat-downloader` の出力 JSON を同形式に変換（yt-dlp は Twitch チャットを抽出しない）
+- [x] `src/main.py` に `--url` / `--fetch-dir` / `--fetch-name` 追加。fetch は遅延 import なのでコアパイプライン側は yt-dlp 非依存のまま
+- [x] [requirements.txt](../requirements.txt) を有効化（`yt-dlp` + `chat-downloader`）
+- [x] [tests/test_fetch.py](../tests/test_fetch.py): プラットフォーム判定 / YouTube + Twitch チャット変換 / 名前推定 / コマンド検出（24 件、subprocess 不使用）
+- [x] [README.md](../README.md) / [CLAUDE.md](../CLAUDE.md) / [docs/architecture.md](architecture.md) / [docs/workflow.md](workflow.md) を URL 取得フロー込みで更新
+
 ## 未完了 / 次にやること
 
 ### 優先度: 高（次のセッションで触る想定）
@@ -81,7 +90,7 @@
 ### 優先度: 中（検出器の本実装）
 
 - [ ] `scenedetect` 検出器: PySceneDetect 導入。`requirements.txt` の `scenedetect` を有効化
-- [ ] チャットログ変換アダプタ: Twitch chat replay / YouTube yt-dlp 出力 → 標準形式 JSON
+- [x] チャットログ変換アダプタ: Twitch chat replay / YouTube yt-dlp 出力 → 標準形式 JSON（第5セッション-a で完了）
 - [ ] チャット詳細スコア: ユニークユーザ数だけでなく「草 / lol / w連投」など特定リアクションの数を信号に
 - [ ] z-score 正規化オプション（複数動画にまたがる絶対比較が必要になったら）
 
@@ -101,6 +110,35 @@
 - [ ] SNS 投稿アダプタ（YouTube Shorts / X / TikTok）
 
 ## 設計判断ログ
+
+### 2026-05-10（第5セッション-a）
+
+**URL 取得は別スクリプトに分離（コアパイプラインに混ぜない）**
+- 候補:
+  1. `src/main.py` に `--url` を組み込み、yt-dlp を直接 import
+  2. 別スクリプト `scripts/fetch.py` に分離し、`src/main.py` からは遅延 import
+  3. 完全に独立した CLI（`scripts/fetch.py` のみ。main は URL を知らない）
+- 採用: (2)
+- 理由:
+  - (1) はコアパイプラインが yt-dlp に依存し、`pip install` 必須になる。**コアは標準ライブラリのみ**という設計原則が崩れる
+  - (3) はワンコマンドで通せず、URL を扱う度に2コマンド必要で UX が悪い
+  - (2) は両方の良いとこ取り。`--url` 未指定時は `scripts.fetch` が import されないので、最小インストール（`pip install` なし）でもパイプライン本体は動く
+
+**Twitch チャットは `chat-downloader`（yt-dlp ではなく）**
+- 候補:
+  1. yt-dlp 1本で統一
+  2. YouTube は yt-dlp、Twitch は `chat-downloader`
+  3. 自前で Twitch GraphQL を叩く
+- 採用: (2)
+- 理由:
+  - yt-dlp は Twitch VOD のチャット抽出を実装していない（メタデータ取得のみ）
+  - `chat-downloader` は YouTube/Twitch 双方サポートだが、YouTube 側は yt-dlp の `live_chat.json` の方が rich（emoji shortcuts、author 詳細等）。プラットフォームごとに最適なツールを選んだ
+  - (3) は API の breaking change リスクが高く、メンテ負荷を持つ価値がない
+
+**チャット変換関数は subprocess を呼ばない pure 関数に分離**
+- `parse_youtube_live_chat_jsonl(lines: Iterable[str])` / `parse_twitch_chat_json(raw: object)` は in-memory データを受け取って `[{t, user, text}]` を返す
+- 理由: テストが `tests/test_fetch.py` で yt-dlp / chat-downloader / ネットワーク無しに 24 件流せる。CI でも追加依存ゼロで走る
+- ダウンロード本体は別の `download_video` / `download_youtube_chat` / `download_twitch_chat` で subprocess ラッパーに集約
 
 ### 2026-05-09（第4セッション-b）
 

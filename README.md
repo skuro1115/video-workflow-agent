@@ -25,7 +25,9 @@
   - macOS: `brew install ffmpeg`
   - Ubuntu: `sudo apt install ffmpeg`
 
-現時点で Python の追加依存はありません（[requirements.txt](requirements.txt) はコメントアウト済みの将来予定リスト）。
+**コア（probe → detect → plan → export）は追加 Python 依存ゼロ**で動きます。
+URL から動画＋チャットを取ってくる `scripts/fetch.py` を使うときだけ
+`pip install -r requirements.txt`（`yt-dlp` と `chat-downloader`）が必要です。
 
 ---
 
@@ -34,6 +36,15 @@
 ```bash
 # 0. 利用可能な検出器の一覧
 python -m src.main --list-detectors
+
+# 0.5 URL から動画＋チャット自動取得 → そのままパイプライン
+#     （YouTube ライブアーカイブ / Twitch VOD 対応。要 yt-dlp + chat-downloader）
+python -m src.main --url https://www.youtube.com/watch?v=XXXXXXXXXXX \
+    --output output/ --detector composite --weights weights.example.json
+
+# 取得だけしたい場合（後から手で見たい / 自前パイプライン用）
+python -m scripts.fetch --url https://www.twitch.tv/videos/123456789 \
+    --output samples/ --name vodA
 
 # 1. 入力動画を samples/ に置く（任意のパスでも可）
 cp /path/to/video.mp4 samples/sample.mp4
@@ -99,7 +110,11 @@ python -m src.main --input samples/sample.mp4 --output output/ \
 ]
 ```
 
-`t` は動画頭からの秒数。Twitch / YouTube ライブのチャット履歴を取り込むには、それぞれの形式（yt-dlp など）からこの形式に変換するスクリプトが別途必要（未実装）。
+`t` は動画頭からの秒数。YouTube ライブアーカイブ / Twitch VOD はこの形式に
+[scripts/fetch.py](scripts/fetch.py) が自動変換します（YouTube は yt-dlp の
+`live_chat.json`、Twitch は `chat-downloader` の出力を変換）。手で別形式から
+変換したい場合は `parse_youtube_live_chat_jsonl` / `parse_twitch_chat_json` を
+ライブラリとして直接呼べます。
 
 合成サンプル動画（手元に動画が無いときの動作確認用）:
 
@@ -151,8 +166,11 @@ python -m scripts.eval \
 
 | フラグ | デフォルト | 説明 |
 | --- | --- | --- |
-| `--input` | (必須) | 入力動画パス |
+| `--input` | (必須\*) | 入力動画パス（\*`--url` 指定時は自動セット） |
 | `--output` | (必須) | 出力ディレクトリ |
+| `--url` | none | YouTube / Twitch URL を渡すと事前に動画＋チャットを取得 → 自動で `--input`/`--chat-log` に流す |
+| `--fetch-dir` | `samples/` | `--url` でのダウンロード先 |
+| `--fetch-name` | URL 由来 | `--url` でのファイル名（`<name>.mp4` / `<name>.chat.json`） |
 | `--detector` | `even` | 検出器名: `even` / `audio_rms` / `comment_density` / `composite` |
 | `--candidates` | `6` | 候補区間の本数 |
 | `--window` | `30.0` | 1候補の長さ（NMS の最小間隔を兼ねる） |
