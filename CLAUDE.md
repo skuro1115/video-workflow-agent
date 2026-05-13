@@ -13,7 +13,7 @@ Long-form video → hotspot detection → clip extraction pipeline. See [README.
 - `comment_reaction` — like `comment_density`, but only counts reaction tokens (草 / lol / w連投 / 🤣). Sharper than density when chat is busy with greetings
 - `composite` — runs multiple sub-detectors, weighted-sum combines per-bin scores
 
-`--from-plan`, `--debug`, `--chat-log`, `--weights`, `--interactive-weights`, `--list-detectors`, `--settings`, `--url` are wired. Tests via stdlib unittest. Real (not synthetic) video has not been tried yet — that's the next human-judgment step.
+`--from-plan`, `--debug`, `--chat-log`, `--weights`, `--interactive-weights`, `--list-detectors`, `--settings`, `--url`, `--export-thumbnails` are wired. Tests via stdlib unittest. Real (not synthetic) video has not been tried yet — that's the next human-judgment step.
 
 **Ingest** ([scripts/fetch.py](scripts/fetch.py)): URL → `<dir>/<name>.mp4` + `<dir>/<name>.chat.json` (app format). YouTube live archives use `yt-dlp --write-subs --sub-langs live_chat`; Twitch VODs use `chat-downloader` (yt-dlp doesn't extract Twitch chat). Triggered standalone (`python -m scripts.fetch --url ...`) or via `src.main --url ...` (lazy-imported so the core pipeline never touches yt-dlp). Exit codes 20–26 — see the module docstring.
 
@@ -65,12 +65,13 @@ Strict one-way module dependency, top to bottom:
 
 ```
 main.py (CLI)
-  → score_weights.py    (Weights dataclass, load/save/interactive)
-  → config.py           (PipelineConfig dataclass)
-  → video_info.py       (ffprobe wrapper, exit 2-4)
-  → hotspot_detector.py (HotspotDetector ABC + 4 implementations + factory; exit 6/9/10)
-  → clip_planner.py     (HotspotCandidate → ClipPlan)
-  → clip_exporter.py    (ffmpeg encode, opt-in; exit 5)
+  → score_weights.py      (Weights dataclass, load/save/interactive)
+  → config.py             (PipelineConfig dataclass)
+  → video_info.py         (ffprobe wrapper, exit 2-4)
+  → hotspot_detector.py   (HotspotDetector ABC + 5 implementations + factory; exit 6/9/10)
+  → clip_planner.py       (HotspotCandidate → ClipPlan)
+  → thumbnail_extractor.py(ffmpeg single-frame, opt-in via --export-thumbnails; exit 5)
+  → clip_exporter.py      (ffmpeg encode, opt-in; exit 5)
 ```
 
 Detector contract:
@@ -79,7 +80,7 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
     -> list[HotspotCandidate]
 ```
 
-Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`, `clip_plan.json`, `clip_export_result.json`, `run_timing.json`, `debug/audio_rms.json`, `debug/comment_density.json`, `debug/comment_reaction.json`, `debug/composite_combined.json`, `debug/composite_subdetectors.json`) so any stage can be re-run independently. Field-level reference: [docs/schemas.md](docs/schemas.md) — keep in sync when changing any dataclass. See [docs/architecture.md](docs/architecture.md) for the rationale.
+Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`, `clip_plan.json`, `clip_export_result.json`, `thumbnail_export_result.json`, `run_timing.json`, `debug/audio_rms.json`, `debug/comment_density.json`, `debug/comment_reaction.json`, `debug/composite_combined.json`, `debug/composite_subdetectors.json`) so any stage can be re-run independently. Field-level reference: [docs/schemas.md](docs/schemas.md) — keep in sync when changing any dataclass. See [docs/architecture.md](docs/architecture.md) for the rationale.
 
 ## Conventions worth knowing
 
@@ -89,6 +90,7 @@ Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`,
 - **CompositeDetector skips bins with zero contribution.** A bin nobody scored is not a candidate, even with `min_score=0`. Don't relax this without thinking — it reintroduces a real bug.
 - **Single-candidate edge case: norm = 1.0, not 0.** When a sub-detector returns one candidate, min-max would degenerate to zero and silently drop it. The fallback is `if s_max <= s_min: norm = 1.0`. Don't remove the guard.
 - **`--export-clips` is opt-in.** `--from-plan` implies it; nothing else does.
+- **`--export-thumbnails` is independent of `--export-clips`.** Cheap (~50ms/clip) and meant for visual review of `clip_plan.json` before paying the encode cost. `--from-plan` does NOT imply it (thumbnails should already exist from the planning run).
 - **All ffmpeg/ffprobe failures map to typed exceptions** → main maps to exit codes 2–10 (see [docs/workflow.md](docs/workflow.md)).
 - **Tests use stdlib `unittest` + `unittest.mock`.** No pytest. `python -m unittest discover -s tests`.
 - **Ingest deps are optional.** `scripts/fetch.py` is imported lazily inside `src/main.py` only when `--url` is set, so a minimal install (no `yt-dlp` / `chat-downloader`) still runs the full pipeline. Don't move that import to module top-level.

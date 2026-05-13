@@ -26,6 +26,7 @@ class PipelineConfig:
 
     # Export
     export_clips: bool = False
+    export_thumbnails: bool = False
     video_codec: str = "libx264"
     audio_codec: str = "aac"
 

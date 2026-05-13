@@ -65,6 +65,7 @@ from .score_weights import (
     parse_weights_dict,
 )
 from .settings_loader import SettingsLoadError, load_settings
+from .thumbnail_extractor import ThumbnailExtractionError, extract_thumbnails
 from .video_info import FFprobeFailedError, FFprobeNotFoundError, probe
 
 
@@ -135,6 +136,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--export-clips", action="store_true",
         help="Cut clips with ffmpeg (default: only write the JSON plan).",
+    )
+    p.add_argument(
+        "--export-thumbnails", action="store_true",
+        help="Grab one midpoint-frame JPEG per planned clip into "
+             "<output>/thumbnails/. Cheap (~50ms/clip) and useful for "
+             "visual review before paying for --export-clips re-encode.",
     )
     p.add_argument(
         "--from-plan", type=Path, default=None,
@@ -300,10 +307,33 @@ def _run_full_pipeline(
     )
     print(f"      {len(plans)} clips planned")
 
+    if cfg.export_thumbnails:
+        rc = _run_thumbnails(cfg, plans, timer=timer)
+        if rc != 0:
+            return rc
+
     if cfg.export_clips:
         return _run_export(cfg, plans, timer=timer)
     print("[4/4] Skipped export (pass --export-clips to cut actual clips)")
     print(f"Done. Output: {cfg.output_dir}")
+    return 0
+
+
+def _run_thumbnails(cfg: PipelineConfig, plans: list[ClipPlan], *, timer: RunTimer) -> int:
+    print("[thumbnails] Extracting one midpoint frame per clip")
+    try:
+        with timer.stage("thumbnails", clips=len(plans)):
+            results = extract_thumbnails(
+                input_path=cfg.input_path,
+                output_dir=cfg.output_dir / "thumbnails",
+                plans=plans,
+            )
+    except ThumbnailExtractionError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 5
+    _write_json(cfg.output_dir / "thumbnail_export_result.json", results)
+    ok = sum(1 for r in results if r["status"] == "extracted")
+    print(f"             extracted {ok}/{len(results)}")
     return 0
 
 
@@ -344,6 +374,10 @@ def _run_from_plan(cfg: PipelineConfig, plan_path: Path, *, timer: RunTimer) -> 
         return 8
     print(f"            {len(plans)} clips loaded")
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.export_thumbnails:
+        rc = _run_thumbnails(cfg, plans, timer=timer)
+        if rc != 0:
+            return rc
     return _run_export(cfg, plans, timer=timer)
 
 
@@ -428,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
         min_clip_duration=args.min_duration,
         max_clip_duration=args.max_duration,
         export_clips=args.export_clips or args.from_plan is not None,
+        export_thumbnails=args.export_thumbnails,
     )
     return run(
         cfg,

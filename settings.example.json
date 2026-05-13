@@ -17,6 +17,8 @@
 
   "_comment_export_clips": "true にすると ffmpeg で実エンコードまで走る。false ならプラン JSON だけ作って人間レビュー → --from-plan で個別 export。",
   "export_clips": false,
+  "_comment_export_thumbnails": "true にすると各 ClipPlan の中点フレームを output/thumbnails/<clip_id>.jpg に書き出す（~50ms/clip）。プランをサムネイル一覧で目視レビューしてから --from-plan でエンコードに入る運用に便利。",
+  "export_thumbnails": true,
   "debug": true,
 
   "_comment_weights": "composite 検出器の重み。weight=0 で検出器を無効化。fusion は weighted_sum か rrf。詳しくは docs/workflow.md。",
