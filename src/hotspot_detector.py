@@ -1,6 +1,6 @@
 """Hotspot candidate detection.
 
-Pluggable interface. Four implementations live here today:
+Pluggable interface. Five implementations live here today:
 
 - ``EvenSamplingDetector`` — deterministic placeholder, splits the video into
   N evenly-spaced windows. Useful as a fallback and for testing.
@@ -9,6 +9,9 @@ Pluggable interface. Four implementations live here today:
   log in docs/tasks.md for why we don't parse ffmpeg ``astats`` text output).
 - ``CommentDensityDetector`` — picks windows around bursts of live-chat
   activity. Counts unique users per bin so a single spammer can't dominate.
+- ``CommentReactionDetector`` — like ``CommentDensityDetector`` but only
+  counts messages that match audience-reaction tokens (草 / lol / w連投 /
+  emoji). Sharper signal than density when chat is busy with greetings.
 - ``CompositeDetector`` — runs multiple sub-detectors and combines their
   per-bin scores via a weighted sum (weights configured externally; see
   ``score_weights.py``).
@@ -21,10 +24,12 @@ from __future__ import annotations
 import array
 import json
 import math
+import re
 import shutil
 import subprocess
 import sys
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -281,12 +286,14 @@ class CommentDensityDetector(HotspotDetector):
     (so a single spammer can't dominate), greedy NMS top-K. ``score`` is the
     min-max-normalised unique-user count. ``reason`` includes the raw count.
 
-    Source-format notes (see ``docs/workflow.md``):
+    For sharper-signal detection that only counts reactive messages
+    (草 / lol / w連投 / 🤣) instead of all messages, see
+    ``CommentReactionDetector``. The two are complementary and are typically
+    combined via ``CompositeDetector``.
 
-    - Twitch chat replay → use ``--chat-format twitch_replay`` (TODO)
-    - YouTube live chat (``yt-dlp --live-from-start --write-info-json``) →
-      ``--chat-format youtube_yt_dlp`` (TODO)
-    - For now only the canonical normalised JSON above is accepted.
+    Source-format notes: see ``scripts/fetch.py`` for converters that turn
+    YouTube ``yt-dlp --write-subs --sub-langs live_chat`` output and Twitch
+    ``chat-downloader`` output into the canonical format above.
     """
 
     BIN_SECONDS = 10.0  # 10s feels right for chat — tune later from real data
@@ -385,6 +392,220 @@ class CommentDensityDetector(HotspotDetector):
                     end=round(end, 3),
                     score=round(max(0.0, min(1.0, score)), 3),
                     reason=f"comment density: {d} unique users in {self.BIN_SECONDS:g}s",
+                )
+            )
+
+        candidates.sort(key=lambda c: c.start)
+        return candidates
+
+
+# ---------------------------------------------------------------------------
+# Comment reaction detector (chat-reaction tokens → hotspots)
+# ---------------------------------------------------------------------------
+
+class CommentReactionDetector(HotspotDetector):
+    """Pick windows where the audience showed strong *reactions* in chat.
+
+    ``CommentDensityDetector`` only counts unique users — five users typing
+    "hi" looks the same as five typing 「草」. This detector instead measures
+    how many of those messages contained a reaction token (草 / lol / wow /
+    laughter w-runs / 🤣), which is a much sharper signal of "something
+    actually happened on screen" — especially during the opening greeting
+    flood when density is high but content is empty.
+
+    Algorithm:
+      1. Read chat log (same JSON format as ``CommentDensityDetector``).
+      2. For each message, compute a per-message reaction strength = count
+         of distinct reaction patterns that matched, capped at
+         ``MAX_PER_MESSAGE``. The cap dampens emoji-spam single messages
+         like "草www lol omg やばい!!" from carrying too much weight.
+      3. Bin by ``BIN_SECONDS``. Per-bin score = sum over **unique users**
+         of each user's max per-message strength in this bin — so a single
+         user spamming "草" 50 times contributes the same as if they said
+         it once. Anti-spam, same as the density detector.
+      4. Min-max normalise → greedy NMS top-K, separated by ``window_seconds``.
+
+    Reason includes the top reaction tokens that fired in the bin so a
+    reviewer can see *what* the audience reacted with.
+    """
+
+    BIN_SECONDS = 10.0      # Same as CommentDensityDetector for comparability.
+    MAX_PER_MESSAGE = 3     # Cap per-message reaction strength (anti emoji-spam).
+
+    # Tokens that need word-boundary matching (English ASCII could appear inside
+    # other words: "lol" in "lolly", "wow" in "wowza"). Case-insensitive.
+    DEFAULT_BOUNDARY_TOKENS: tuple[str, ...] = (
+        "lol", "lmao", "rofl", "lul", "lulw",
+        "wow", "omg", "pog", "poggers",
+        "wktk",
+    )
+    # Tokens that match as plain substring — Japanese / emoji have no word
+    # boundary issue in CJK text. Case-insensitive (lower-cased on both sides).
+    DEFAULT_PLAIN_TOKENS: tuple[str, ...] = (
+        "草", "くさ", "笑", "ワロタ", "わろた",
+        "やばい", "やべえ", "やべぇ",
+        "すごい", "すげえ", "すげぇ",
+        "うぽつ",
+        "🤣", "😂", "🔥",
+    )
+    # W-run laughter — both halfwidth "wwww" and fullwidth 「ｗｗｗ」. Whole run
+    # counts as a single reaction (so "wwwwwwww" and "ww" weigh the same).
+    _W_RUN_LABEL = "w連投"
+    _W_RUN_REGEX = re.compile(r"[wｗ]{2,}", re.IGNORECASE)
+
+    def __init__(
+        self,
+        count: int,
+        window_seconds: float,
+        chat_log_path: Path,
+        *,
+        boundary_tokens: tuple[str, ...] | None = None,
+        plain_tokens: tuple[str, ...] | None = None,
+    ) -> None:
+        self.count = max(1, count)
+        self.window_seconds = max(1.0, window_seconds)
+        self.chat_log_path = chat_log_path
+        boundary = boundary_tokens if boundary_tokens is not None else self.DEFAULT_BOUNDARY_TOKENS
+        plain = plain_tokens if plain_tokens is not None else self.DEFAULT_PLAIN_TOKENS
+        self._boundary_pairs: list[tuple[str, re.Pattern[str]]] = [
+            (tok, re.compile(rf"\b{re.escape(tok)}\b", re.IGNORECASE))
+            for tok in boundary
+        ]
+        # Lower-case once for substring search; keep original tok for reporting.
+        self._plain_pairs: list[tuple[str, str]] = [(tok, tok.lower()) for tok in plain]
+
+    def _match_message(self, text: str) -> tuple[int, list[str]]:
+        """Return ``(strength, matched_labels)`` for a single message.
+
+        ``strength`` is capped at ``MAX_PER_MESSAGE``. ``matched_labels`` is
+        the *uncapped* list of distinct tokens (used for the bin's
+        token-count tally, so the reason can show *what* was said).
+        """
+        if not text:
+            return 0, []
+        text_lower = text.lower()
+        matched: list[str] = []
+        for tok, rx in self._boundary_pairs:
+            if rx.search(text):
+                matched.append(tok)
+        for tok, tok_lower in self._plain_pairs:
+            if tok_lower in text_lower:
+                matched.append(tok)
+        if self._W_RUN_REGEX.search(text):
+            matched.append(self._W_RUN_LABEL)
+        return min(len(matched), self.MAX_PER_MESSAGE), matched
+
+    def detect(
+        self,
+        *,
+        input_path: Path,
+        duration: float,
+        debug_dir: Path | None = None,
+    ) -> list[HotspotCandidate]:
+        del input_path  # chat log is the only signal
+
+        if not self.chat_log_path.exists():
+            raise FileNotFoundError(
+                f"Chat log not found: {self.chat_log_path}. "
+                "Pass --chat-log <path> or remove comment_reaction from --weights."
+            )
+        try:
+            raw = json.loads(self.chat_log_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid chat-log JSON {self.chat_log_path}: {e}") from e
+
+        if isinstance(raw, dict) and "messages" in raw:
+            messages = raw["messages"]
+        else:
+            messages = raw
+
+        n_bins = max(1, int(math.ceil(duration / self.BIN_SECONDS)))
+        # For each bin: best per-message strength per user, plus a Counter
+        # over matched token labels (for the reason string and debug dump).
+        per_bin_user_best: list[dict[str, int]] = [dict() for _ in range(n_bins)]
+        per_bin_tokens: list[Counter[str]] = [Counter() for _ in range(n_bins)]
+
+        for m in messages:
+            try:
+                t = float(m.get("t", -1))
+            except (TypeError, ValueError):
+                continue
+            if t < 0 or t >= duration:
+                continue
+            strength, labels = self._match_message(str(m.get("text", "")))
+            if strength <= 0:
+                continue
+            b = int(t / self.BIN_SECONDS)
+            user = str(m.get("user", ""))
+            prev = per_bin_user_best[b].get(user, 0)
+            if strength > prev:
+                per_bin_user_best[b][user] = strength
+            per_bin_tokens[b].update(labels)
+
+        bin_score = [sum(d.values()) for d in per_bin_user_best]
+
+        if debug_dir is not None:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            (debug_dir / "comment_reaction.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "t": round(i * self.BIN_SECONDS, 3),
+                            "score": bin_score[i],
+                            "unique_reactors": len(per_bin_user_best[i]),
+                            "top_tokens": per_bin_tokens[i].most_common(5),
+                        }
+                        for i in range(n_bins)
+                    ],
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+        if not any(bin_score):
+            return []
+
+        s_max = max(bin_score)
+        s_min = min(s for s in bin_score if s > 0)
+        # If every reactive bin has the same score, normalise to 1.0 so the
+        # detector still contributes something (matches the composite
+        # min-max guard for single-candidate cases).
+        s_range = (s_max - s_min) if s_max > s_min else 1.0
+
+        sorted_bins = sorted(
+            ((i * self.BIN_SECONDS, i, bin_score[i]) for i in range(n_bins) if bin_score[i] > 0),
+            key=lambda x: x[2],
+            reverse=True,
+        )
+        picks: list[tuple[float, int, int]] = []
+        for t, b, s in sorted_bins:
+            if len(picks) >= self.count:
+                break
+            if any(abs(t - pt) < self.window_seconds for pt, _, _ in picks):
+                continue
+            picks.append((t, b, s))
+
+        candidates: list[HotspotCandidate] = []
+        for t, b, s in picks:
+            start = max(0.0, t - self.window_seconds / 2)
+            end = min(duration, start + self.window_seconds)
+            if end - start < self.window_seconds:
+                start = max(0.0, end - self.window_seconds)
+            score = (s - s_min) / s_range if s_max > s_min else 1.0
+            top = per_bin_tokens[b].most_common(3)
+            top_str = ", ".join(f"{tok}×{n}" for tok, n in top) if top else "—"
+            n_users = len(per_bin_user_best[b])
+            reason = (
+                f"audience reaction: {s} hits across {n_users} users "
+                f"(top: {top_str})"
+            )
+            candidates.append(
+                HotspotCandidate(
+                    start=round(start, 3),
+                    end=round(end, 3),
+                    score=round(max(0.0, min(1.0, score)), 3),
+                    reason=reason,
                 )
             )
 
@@ -636,6 +857,7 @@ AVAILABLE_DETECTORS: tuple[str, ...] = (
     "even",
     "audio_rms",
     "comment_density",
+    "comment_reaction",
     "composite",
 )
 
@@ -664,6 +886,16 @@ def build_detector(
                 "comment_density detector requires --chat-log <path>."
             )
         return CommentDensityDetector(
+            count=count,
+            window_seconds=window_seconds,
+            chat_log_path=chat_log_path,
+        )
+    if name == "comment_reaction":
+        if chat_log_path is None:
+            raise ValueError(
+                "comment_reaction detector requires --chat-log <path>."
+            )
+        return CommentReactionDetector(
             count=count,
             window_seconds=window_seconds,
             chat_log_path=chat_log_path,

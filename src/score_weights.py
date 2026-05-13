@@ -81,32 +81,30 @@ def default_weights() -> Weights:
     )
 
 
-def load_weights(path: Path) -> Weights:
-    if not path.exists():
-        raise WeightsConfigError(f"weights file not found: {path}")
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise WeightsConfigError(f"invalid JSON in {path}: {e}") from e
+def parse_weights_dict(raw: dict, *, source: str = "<inline>") -> Weights:
+    """Validate a raw dict and return a Weights instance.
 
+    Used by both ``load_weights`` (file → dict → Weights) and the settings
+    loader (settings.json's inline ``weights`` field → Weights).
+    """
     if not isinstance(raw, dict):
-        raise WeightsConfigError(f"{path}: top-level must be a JSON object")
+        raise WeightsConfigError(f"{source}: top-level must be a JSON object")
 
     detectors_raw = raw.get("detectors", [])
     if not isinstance(detectors_raw, list):
-        raise WeightsConfigError(f"{path}: 'detectors' must be a list")
+        raise WeightsConfigError(f"{source}: 'detectors' must be a list")
 
     detectors: list[DetectorWeight] = []
     for i, entry in enumerate(detectors_raw):
         if not isinstance(entry, dict) or "name" not in entry:
             raise WeightsConfigError(
-                f"{path}: detectors[{i}] must be an object with at least 'name'"
+                f"{source}: detectors[{i}] must be an object with at least 'name'"
             )
         try:
             weight = float(entry.get("weight", 1.0))
         except (TypeError, ValueError) as e:
             raise WeightsConfigError(
-                f"{path}: detectors[{i}].weight must be a number"
+                f"{source}: detectors[{i}].weight must be a number"
             ) from e
         detectors.append(DetectorWeight(name=str(entry["name"]), weight=weight))
 
@@ -114,19 +112,19 @@ def load_weights(path: Path) -> Weights:
         bin_seconds = float(raw.get("bin_seconds", 1.0))
         min_score = float(raw.get("min_score", 0.0))
     except (TypeError, ValueError) as e:
-        raise WeightsConfigError(f"{path}: bin_seconds / min_score must be numbers") from e
+        raise WeightsConfigError(f"{source}: bin_seconds / min_score must be numbers") from e
 
     fusion = str(raw.get("fusion", "weighted_sum"))
     if fusion not in FUSION_MODES:
         raise WeightsConfigError(
-            f"{path}: 'fusion' must be one of {FUSION_MODES}, got {fusion!r}"
+            f"{source}: 'fusion' must be one of {FUSION_MODES}, got {fusion!r}"
         )
     try:
         rrf_k = int(raw.get("rrf_k", 60))
     except (TypeError, ValueError) as e:
-        raise WeightsConfigError(f"{path}: rrf_k must be an integer") from e
+        raise WeightsConfigError(f"{source}: rrf_k must be an integer") from e
     if rrf_k < 1:
-        raise WeightsConfigError(f"{path}: rrf_k must be >= 1, got {rrf_k}")
+        raise WeightsConfigError(f"{source}: rrf_k must be >= 1, got {rrf_k}")
 
     return Weights(
         detectors=detectors,
@@ -135,6 +133,16 @@ def load_weights(path: Path) -> Weights:
         fusion=fusion,
         rrf_k=rrf_k,
     )
+
+
+def load_weights(path: Path) -> Weights:
+    if not path.exists():
+        raise WeightsConfigError(f"weights file not found: {path}")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise WeightsConfigError(f"invalid JSON in {path}: {e}") from e
+    return parse_weights_dict(raw, source=str(path))
 
 
 def save_weights(path: Path, weights: Weights) -> None:

@@ -20,22 +20,24 @@
 
 ## 必要環境
 
-- Python 3.11+
-- ffmpeg / ffprobe（PATH 上に必要）
-  - macOS: `brew install ffmpeg`
-  - Ubuntu: `sudo apt install ffmpeg`
+> **環境構築の手順・必要バージョン・Docker での代替セットアップ・トラブルシューティングはすべて [SETUP.md](SETUP.md) に集約しています。**
 
-**コア（probe → detect → plan → export）は追加 Python 依存ゼロ**で動きます。
-URL から動画＋チャットを取ってくる `scripts/fetch.py` を使うときだけ
-`pip install -r requirements.txt`（`yt-dlp` と `chat-downloader`）が必要です。
+ざっくり: Python 3.11+ と ffmpeg/ffprobe があれば**コア（probe → detect → plan → export）は動きます**。
+URL から動画＋チャットを取ってくる `scripts/fetch.py` を使うときだけ、
+`pip install -r requirements.txt`（`yt-dlp` と `chat-downloader`）が必要。手順詳細・OS 別コマンド・Docker 経由の起動方法は SETUP.md。
 
 ---
 
 ## 使い方
 
+> **非エンジニア向けには [settings.example.json](settings.example.json) をコピーして `settings.json` を作り、`python -m src.main --settings settings.json` を実行するのが一番簡単です。CLI フラグは設定ファイルの値を上書きします。**
+
 ```bash
 # 0. 利用可能な検出器の一覧
 python -m src.main --list-detectors
+
+# 全設定を1ファイルで（非エンジニア推奨）
+python -m src.main --settings settings.json
 
 # 0.5 URL から動画＋チャット自動取得 → そのままパイプライン
 #     （YouTube ライブアーカイブ / Twitch VOD 対応。要 yt-dlp + chat-downloader）
@@ -183,6 +185,7 @@ python -m scripts.eval \
 | `--weights` | none | `composite` 用の重み設定 JSON |
 | `--interactive-weights` | off | 重みを stdin で対話入力（`composite` を強制） |
 | `--list-detectors` | — | 登録済み検出器の一覧を出して終了 |
+| `--settings` | none | 全設定を1ファイル化した JSON を読み込む（CLI フラグは上書き優先） |
 
 ---
 

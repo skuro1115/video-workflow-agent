@@ -1,0 +1,26 @@
+# Keep the build context small and prevent host secrets / outputs from
+# being baked into the image.
+
+.git/
+.github/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Pipeline outputs and large input videos — mounted at runtime instead.
+output/
+samples/
+
+# Editor / OS junk
+.DS_Store
+.vscode/
+.idea/
+
+# Docs are not needed inside the image
+docs/
+docs.md
+README.md
+SETUP.md
+CLAUDE.md

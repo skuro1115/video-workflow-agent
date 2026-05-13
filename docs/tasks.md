@@ -69,14 +69,24 @@
 - [x] tests: RRF 5 件 + score_weights JSON 6 件の追加（合計 70 件）
 - [x] 既存 `weights.json`（fusion フィールド無し）を読んでも `weighted_sum` として正常動作することを test で保証
 
+### 第5セッション-b（チャット詳細スコア: 反応トークン重み付け）
+
+- [x] [src/hotspot_detector.py](../src/hotspot_detector.py): `CommentReactionDetector` 追加。chat-log の各メッセージから 草 / lol / wow / w連投 / 🤣 等の反応トークンをマッチさせ、bin 別に「ユニークユーザの反応強度合計」を算出
+- [x] 反応スコアリング: per-message 強度 = マッチした distinct トークン数（`MAX_PER_MESSAGE=3` でキャップ、絵文字スパム対策）。per-bin = ユニークユーザ × そのユーザの最大強度
+- [x] トークン分類: ASCII（lol / wow 等）は `\b` 境界マッチで "lolly" 等の誤検出を防止。CJK / 絵文字（草 / 🤣）はサブストリング。`[wｗ]{2,}` の連投は run 全体で 1 反応扱い
+- [x] `AVAILABLE_DETECTORS` / `build_detector` に `comment_reaction` 登録（`--chat-log` 必須、`comment_density` と同じ）
+- [x] [weights.example.json](../weights.example.json) / [settings.example.json](../settings.example.json) に新検出器を追加（既定は `comment_reaction` を 2.0 で composite に組み込む）
+- [x] [docs/schemas.md](schemas.md) に reason 例 + `comment_reaction.json` debug 形式を追記、[CLAUDE.md](../CLAUDE.md) を「5 detectors」に更新
+- [x] tests/test_hotspot_detector.py: 反応 vs 密度 / スパマー耐性 / w-run / 境界マッチ / per-message キャップ / 反応無 / カスタムトークン等 9 件追加（合計 121 件）
+
 ### 第5セッション-a（URL 取得自動化: ingest 層）
 - [x] [scripts/fetch.py](../scripts/fetch.py): URL → 動画 + チャット JSON（アプリ形式）の取得アダプタ
 - [x] YouTube ライブアーカイブ対応: `yt-dlp --write-subs --sub-langs live_chat` の `live_chat.json` (JSONL) を `[{t, user, text}]` に変換
 - [x] Twitch VOD 対応: `chat-downloader` の出力 JSON を同形式に変換（yt-dlp は Twitch チャットを抽出しない）
 - [x] `src/main.py` に `--url` / `--fetch-dir` / `--fetch-name` 追加。fetch は遅延 import なのでコアパイプライン側は yt-dlp 非依存のまま
-- [x] [requirements.txt](../requirements.txt) を有効化（`yt-dlp` + `chat-downloader`）
+- [x] [requirements.txt](../requirements.txt) を有効化（`yt-dlp` + `chat-downloader`）+ Dockerfile コメント更新
 - [x] [tests/test_fetch.py](../tests/test_fetch.py): プラットフォーム判定 / YouTube + Twitch チャット変換 / 名前推定 / コマンド検出（24 件、subprocess 不使用）
-- [x] [README.md](../README.md) / [CLAUDE.md](../CLAUDE.md) / [docs/architecture.md](architecture.md) / [docs/workflow.md](workflow.md) を URL 取得フロー込みで更新
+- [x] [README.md](../README.md) / [CLAUDE.md](../CLAUDE.md) / [SETUP.md](../SETUP.md) を URL 取得フロー込みで更新
 
 ## 未完了 / 次にやること
 
@@ -91,7 +101,8 @@
 
 - [ ] `scenedetect` 検出器: PySceneDetect 導入。`requirements.txt` の `scenedetect` を有効化
 - [x] チャットログ変換アダプタ: Twitch chat replay / YouTube yt-dlp 出力 → 標準形式 JSON（第5セッション-a で完了）
-- [ ] チャット詳細スコア: ユニークユーザ数だけでなく「草 / lol / w連投」など特定リアクションの数を信号に
+- [x] チャット詳細スコア: ユニークユーザ数だけでなく「草 / lol / w連投」など特定リアクションの数を信号に（第5セッション-b で完了）
+- [ ] 反応トークンの外部設定: 配信者固有の絵文字（Twitch チャンネル emote, e.g. `PogU` / `AYAYA`）を JSON で追加できるようにする。コアの `comment_reaction` は constructor 引数を受け付けているが、CLI / settings.json からは未公開
 - [ ] z-score 正規化オプション（複数動画にまたがる絶対比較が必要になったら）
 
 ### 優先度: 中（段階的要約）
@@ -110,6 +121,41 @@
 - [ ] SNS 投稿アダプタ（YouTube Shorts / X / TikTok）
 
 ## 設計判断ログ
+
+### 2026-05-10（第5セッション-b）
+
+**`comment_reaction` を独立検出器として追加（`comment_density` を拡張せず）**
+- 候補:
+  1. `CommentDensityDetector` に `reaction_weight` パラメータを足し、密度と反応を内部で混ぜる
+  2. 別検出器 `CommentReactionDetector` を新設、composite で密度と並列に組み合わせる
+  3. 反応スコアだけ計算し、密度を捨てる
+- 採用: (2)
+- 理由:
+  - (1) は1検出器に2つの異なる信号が同居し、reason の表現と min-max 正規化のスケールがどちらに合うのか曖昧になる
+  - (2) は既存設計の「1 検出器 = 1 信号、composite で重みづけ」原則と一致する。ユーザは `weight=0` で片方を切れる
+  - (3) は密度が独立に有用なケース（議論ピーク、解説ピークでは反応より発言量が立つ）を切り捨てる
+
+**反応強度のキャップ + per-user 最大値合算**
+- 候補:
+  1. メッセージごとにマッチ数を素直に合算
+  2. メッセージごとに `MAX_PER_MESSAGE` でキャップ、bin 内 per-user 最大値を合算
+  3. メッセージごとにキャップ、bin 内 per-user 合計を合算
+- 採用: (2)
+- 理由:
+  - (1) は「草 lol wow omg やばい 🤣 wwww!!」と1人が叫んだメッセージが density 30 ユーザーぶんの反応に化ける
+  - (3) はスパマー耐性が `CommentDensityDetector` より弱くなる（同一ユーザの連投が積み上がる）
+  - (2) は既存の `CommentDensityDetector` のスパマー耐性（per-user 1票）と整合し、かつ「強い反応をした人」を「弱い反応をした人」より重く扱える
+
+**反応トークンの分類: ASCII は `\b` 境界、CJK / 絵文字はサブストリング**
+- "lol" を素朴な substring で探すと "lolly" / "blowfish"（含まれない） / 厳密には "lolol" などで誤検出 / 過検出する
+- 一方 "草" を境界マッチで探そうとすると CJK には word boundary が無く、ほぼ何もマッチしなくなる
+- 採用: ASCII（`re.compile(r'\b...\b', re.IGNORECASE)`）と CJK / 絵文字（小文字化サブストリング）を別系統で持つ
+- `[wｗ]{2,}` の連投はさらに別扱い（run 全体で 1 反応、`ww` も `wwwwwww` も同じ強度）
+
+**反応トークンセットを constructor 引数化、CLI からは未公開**
+- 配信者ごとのチャンネル emote（`PogU`, `AYAYA`, etc.）をサポートする要望が将来くるはず
+- 今回は constructor で `boundary_tokens` / `plain_tokens` を受け付けるところまで。`build_detector` / settings.json からの公開は YAGNI で先送り
+- 必要になったら settings.json に `reactions: {boundary: [...], plain: [...]}` を足し、`build_detector` 経由で渡す
 
 ### 2026-05-10（第5セッション-a）
 

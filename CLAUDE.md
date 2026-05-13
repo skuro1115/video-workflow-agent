@@ -6,15 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Long-form video → hotspot detection → clip extraction pipeline. See [README.md](README.md) and [docs/project_overview.md](docs/project_overview.md) for the full goal.
 
-**Current state**: pipeline runs end-to-end with 4 detectors:
+**Current state**: pipeline runs end-to-end with 5 detectors:
 - `even` — placeholder (evenly-spaced windows, score=0.5)
 - `audio_rms` — extracts mono PCM via ffmpeg, picks loudness peaks with NMS
 - `comment_density` — bins live-chat messages, picks high-unique-user-count windows
+- `comment_reaction` — like `comment_density`, but only counts reaction tokens (草 / lol / w連投 / 🤣). Sharper than density when chat is busy with greetings
 - `composite` — runs multiple sub-detectors, weighted-sum combines per-bin scores
 
-`--from-plan`, `--debug`, `--chat-log`, `--weights`, `--interactive-weights`, `--list-detectors`, `--url` are wired. Tests via stdlib unittest. Real (not synthetic) video has not been tried yet — that's the next human-judgment step.
+`--from-plan`, `--debug`, `--chat-log`, `--weights`, `--interactive-weights`, `--list-detectors`, `--settings`, `--url` are wired. Tests via stdlib unittest. Real (not synthetic) video has not been tried yet — that's the next human-judgment step.
 
 **Ingest** ([scripts/fetch.py](scripts/fetch.py)): URL → `<dir>/<name>.mp4` + `<dir>/<name>.chat.json` (app format). YouTube live archives use `yt-dlp --write-subs --sub-langs live_chat`; Twitch VODs use `chat-downloader` (yt-dlp doesn't extract Twitch chat). Triggered standalone (`python -m scripts.fetch --url ...`) or via `src.main --url ...` (lazy-imported so the core pipeline never touches yt-dlp). Exit codes 20–26 — see the module docstring.
+
+**Environment + Docker**: see [SETUP.md](SETUP.md) — that's the single source of truth for required versions (Python 3.11+, ffmpeg 4+) and the canonical place to update when bumping versions. There's a [Dockerfile](Dockerfile) + [docker-compose.yml](docker-compose.yml) for users who'd rather not install ffmpeg locally.
+
+**Non-engineer config**: [settings.example.json](settings.example.json) bundles all common options into one JSON; users copy it to `settings.json` and run `python -m src.main --settings settings.json`. CLI flags override file values. The loader is in [src/settings_loader.py](src/settings_loader.py).
 
 ## Common commands
 
@@ -74,7 +79,7 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
     -> list[HotspotCandidate]
 ```
 
-Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`, `clip_plan.json`, `clip_export_result.json`, `run_timing.json`, `debug/audio_rms.json`, `debug/comment_density.json`, `debug/composite_combined.json`, `debug/composite_subdetectors.json`) so any stage can be re-run independently. Field-level reference: [docs/schemas.md](docs/schemas.md) — keep in sync when changing any dataclass. See [docs/architecture.md](docs/architecture.md) for the rationale.
+Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`, `clip_plan.json`, `clip_export_result.json`, `run_timing.json`, `debug/audio_rms.json`, `debug/comment_density.json`, `debug/comment_reaction.json`, `debug/composite_combined.json`, `debug/composite_subdetectors.json`) so any stage can be re-run independently. Field-level reference: [docs/schemas.md](docs/schemas.md) — keep in sync when changing any dataclass. See [docs/architecture.md](docs/architecture.md) for the rationale.
 
 ## Conventions worth knowing
 
