@@ -24,11 +24,12 @@ run; everything else has a sensible CLI default):
   - ``window``        (float)
   - ``min_duration``  (float)
   - ``max_duration``  (float)
-  - ``chat_log``      (str)    — path to chat-log JSON
-  - ``export_clips``  (bool)
-  - ``debug``         (bool)
-  - ``weights``       (object) — inline; same schema as weights.example.json
-  - ``weights_path``  (str)    — alternative to ``weights``: load from a path
+  - ``chat_log``         (str)    — path to chat-log JSON
+  - ``export_clips``     (bool)
+  - ``export_thumbnails``(bool)
+  - ``debug``            (bool)
+  - ``weights``          (object) — inline; same schema as weights.example.json
+  - ``weights_path``     (str)    — alternative to ``weights``: load from a path
 
 Keys starting with ``_comment`` (and any other unknown keys) are ignored so
 the file can carry inline notes for non-engineers.
@@ -58,6 +59,7 @@ _KEY_TO_DEST: dict[str, str] = {
     "max_duration": "max_duration",
     "chat_log": "chat_log",
     "export_clips": "export_clips",
+    "export_thumbnails": "export_thumbnails",
     "debug": "debug",
     "weights_path": "weights",  # CLI flag is --weights, dest is "weights"
 }

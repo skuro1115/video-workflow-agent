@@ -69,6 +69,16 @@
 - [x] tests: RRF 5 件 + score_weights JSON 6 件の追加（合計 70 件）
 - [x] 既存 `weights.json`（fusion フィールド無し）を読んでも `weighted_sum` として正常動作することを test で保証
 
+### 第5セッション-c（サムネイル自動生成）
+
+- [x] [src/thumbnail_extractor.py](../src/thumbnail_extractor.py): 各 `ClipPlan` の中点フレームを `output/thumbnails/<clip_id>.jpg` に書き出す。ffmpeg `-ss <t> -i <input> -frames:v 1 -q:v 2 -update 1` で 1clip ~50ms
+- [x] `--export-thumbnails` フラグ追加（CLI / `settings.json` 両対応）。`--export-clips` とは独立。`--from-plan` は thumbnails を imply しない（既に存在する想定）
+- [x] [src/main.py](../src/main.py) に `_run_thumbnails` 段階を挿入、`run_timing.json` に `thumbnails` ステージとして記録
+- [x] [src/config.py](../src/config.py) に `export_thumbnails: bool = False` 追加、[src/settings_loader.py](../src/settings_loader.py) の `_KEY_TO_DEST` に登録
+- [x] [tests/test_thumbnail_extractor.py](../tests/test_thumbnail_extractor.py): subprocess モック 9 件（中点 / オフセット / クランプ / 個別失敗 / ffmpeg 無し / 出力パス / mkdir / 空リスト / コマンド形）
+- [x] スモーク: `samples/sample.mp4` に対して 3 個 .jpg 生成・320x240 JPEG/JFIF を確認
+- [x] [docs/schemas.md](schemas.md) / [docs/workflow.md](workflow.md) / [CLAUDE.md](../CLAUDE.md) / [settings.example.json](../settings.example.json) を thumbnails 込みに更新
+
 ### 第5セッション-b（チャット詳細スコア: 反応トークン重み付け）
 
 - [x] [src/hotspot_detector.py](../src/hotspot_detector.py): `CommentReactionDetector` 追加。chat-log の各メッセージから 草 / lol / wow / w連投 / 🤣 等の反応トークンをマッチさせ、bin 別に「ユニークユーザの反応強度合計」を算出
@@ -113,7 +123,7 @@
 
 ### 優先度: 低（運用・配信）
 
-- [ ] サムネイル自動生成（候補区間中央のフレーム抜き）
+- [x] サムネイル自動生成（候補区間中央のフレーム抜き）（第5セッション-c で完了）
 - [ ] 字幕焼き込み（`drawtext` または `subtitles` フィルタ）
 - [ ] GitHub Actions ワークフロー（PR で changed sample に対し自動でプランだけ生成）
 - [ ] バッチランナー（`samples/*.mp4` を全部回す）
@@ -121,6 +131,37 @@
 - [ ] SNS 投稿アダプタ（YouTube Shorts / X / TikTok）
 
 ## 設計判断ログ
+
+### 2026-05-13（第5セッション-c）
+
+**サムネイル抽出は `--export-clips` から独立 (両方 opt-in)**
+- 候補:
+  1. `--export-clips` を実行する時に常に thumbnails も生成（暗黙）
+  2. `--export-thumbnails` を独立フラグにし、両方明示で組み合わせる
+  3. プランニング時に常時 thumbnails を生成（無条件）
+- 採用: (2)
+- 理由:
+  - (1) は thumbnails が欲しいだけで encode を回したくないユースケース（プランレビュー）が崩れる
+  - (3) はバッチ処理で大量動画を捌く時にディスクと CPU を無駄に使う。明示の方が安全
+  - (2) は両方 opt-in で組み合わせ自由。`settings.json` で `"export_thumbnails": true` 固定にも出来る
+
+**`--from-plan` は `--export-thumbnails` を imply しない**
+- `--from-plan` は `--export-clips` を imply するが、thumbnails は imply しない
+- 理由: thumbnails はプランニング段階で既に生成済みのはず（レビューに使った）。再エンコード時に再生成する意味は薄く、ユーザが明示的に `--export-thumbnails` を付けた時だけ走る方が予測可能
+
+**`-ss` を `-i` の前に置く（fast keyframe seek、フレーム精度を捨てる）**
+- 候補:
+  1. `-ss` を `-i` の後ろ（フレーム精度、ただし大きな動画で遅い）
+  2. `-ss` を `-i` の前（keyframe seek、サブ秒の誤差あり）
+- 採用: (2)
+- 理由:
+  - サムネイルは「だいたいこの辺の絵」が分かれば十分。30秒窓の中点 vs その keyframe の数百ms差は人間には見えない
+  - 1時間動画から `-ss 1800` でフレーム精度 seek すると数秒かかるが、keyframe seek なら ~50ms
+  - clip_exporter の方は `-c:v libx264` で再エンコードするので `-ss` 前置きでもフレーム正確に切れる（こちらは速度優先のまま）
+
+**JPEG quality `-q:v 2` 固定（CLI 公開せず）**
+- ffmpeg の `-q:v` は 1 (best) - 31 (worst)。2 は視覚的に near-lossless で 50-150KB
+- 「サムネイル品質をユーザに選ばせる」価値は小さい (YAGNI)。必要になれば constructor 引数で受けられる構造にしてある
 
 ### 2026-05-10（第5セッション-b）
 

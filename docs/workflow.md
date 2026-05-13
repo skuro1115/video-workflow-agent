@@ -144,6 +144,17 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 - score 降順での優先度付け
 - 「ダイジェスト用 10分版」「ショート用 30秒版」のような複数 purpose の同時発行
 
+## 段階3.5: サムネイル抽出（`thumbnail_extractor.py`、`--export-thumbnails` 指定時のみ）
+
+- 各 ClipPlan に対して `(source_start + source_end) / 2` の位置から1フレーム抜き出す
+- ffmpeg `-ss <t> -i <input> -frames:v 1 -q:v 2 -update 1 <output>/thumbnails/<clip_id>.jpg`
+- `-ss` は `-i` の前に置く（高速 keyframe seek。サムネイルにフレーム精度は不要）
+- 1080p で 1clip ~50ms、6本でも数百ms。`--export-clips` のエンコード（数分〜）と比べて無視できるコスト
+- `--export-clips` とは独立。プランレビューだけしたい時に `--export-thumbnails` 単独で使える
+- 失敗した clip は `thumbnail_export_result.json` に残し、他は継続処理
+
+**主な用途**: `clip_plan.json` を JSON だけで眺めるのは辛いので、サムネイル一覧を見ながら誤検出を弾く / 編集する。レビュー後に `--from-plan` で本エンコード。
+
 ## 段階4: クリップ書き出し（`clip_exporter.py`、`--export-clips` 指定時のみ）
 
 - 各 ClipPlan に対して `ffmpeg -ss <start> -i <input> -t <dur> -c:v libx264 -c:a aac` を実行
@@ -170,7 +181,7 @@ detect(*, input_path: Path, duration: float, debug_dir: Path | None = None)
 | 入力ファイル無し | exit 2 | `Input video not found: ...` |
 | ffprobe 無し | exit 3 | `ffprobe not found on PATH. Install ffmpeg ...` |
 | ffprobe 実行失敗 | exit 4 | `ffprobe failed for ...: <stderr>` |
-| ffmpeg 無し（exportのみ） | exit 5 | `ffmpeg not found on PATH ...` |
+| ffmpeg 無し（export / thumbnails） | exit 5 | `ffmpeg not found on PATH ...` |
 | 個別クリップの ffmpeg 失敗 | 全体は exit 0 | `clip_export_result.json` に `status: "failed"` |
 | 音声抽出失敗（audio_rms） | exit 6 | `ffmpeg audio extraction failed: ...` |
 | `--from-plan` のファイル無し | exit 7 | `plan file not found: ...` |

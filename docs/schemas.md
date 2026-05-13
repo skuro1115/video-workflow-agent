@@ -154,6 +154,27 @@
 
 ---
 
+## `output/thumbnail_export_result.json`
+
+`--export-thumbnails` 指定時のみ生成。各 `ClipPlan` の中点フレームを `output/thumbnails/<clip_id>.jpg` に書き出した結果のサマリ。エクスポートと独立に走るので（`--export-clips` の有無を問わない）、プランレビューだけしたい時にも生成できる。
+
+```json
+[
+  {"clip_id": "clip_001", "status": "extracted", "path": "output/thumbnails/clip_001.jpg", "t": 12.0},
+  {"clip_id": "clip_002", "status": "failed",    "error": "ffmpeg: invalid timestamp"}
+]
+```
+
+| フィールド | 型 | 意味 |
+| --- | --- | --- |
+| `clip_id` | string | 対応する `ClipPlan.clip_id` |
+| `status` | string | `"extracted"` or `"failed"` |
+| `path` | string | 成功時のみ。JPEG ファイルへの相対パス |
+| `t` | float | 成功時のみ。フレーム抽出に使った秒位置（既定では `(source_start+source_end)/2`） |
+| `error` | string | 失敗時のみ。ffmpeg stderr の最終行 |
+
+---
+
 ## `output/debug/` （`--debug` 指定時のみ）
 
 検出器ごとに中間特徴量を dump。チューニング用。スキーマは検出器内部の都合に合わせて自由に変えてよい（外部契約ではない）。
