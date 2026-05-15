@@ -19,12 +19,19 @@ Long-form video → hotspot detection → clip extraction pipeline. See [README.
 
 **Environment + Docker**: see [SETUP.md](SETUP.md) — that's the single source of truth for required versions (Python 3.11+, ffmpeg 4+) and the canonical place to update when bumping versions. There's a [Dockerfile](Dockerfile) + [docker-compose.yml](docker-compose.yml) for users who'd rather not install ffmpeg locally.
 
-**Non-engineer config**: [settings.example.json](settings.example.json) bundles all common options into one JSON; users copy it to `settings.json` and run `python -m src.main --settings settings.json`. CLI flags override file values. The loader is in [src/settings_loader.py](src/settings_loader.py).
+**Inbox workflow (primary UX for non-engineers and AI agents — 第6セッション)**: Drop `*.task.yaml` files into `inbox/`, then `python -m src.main process-inbox`. The processor reads `config.yaml` (default: `./config.yaml`), resolves per-task overrides on top of `defaults`, names the output dir via the toggle-based naming engine, then moves the task descriptor to `archive/` on success or `failed/` + `.error.log` on failure. Schemas in [docs/schemas.md](docs/schemas.md); examples: [config.example.yaml](config.example.yaml), [inbox/example.task.yaml](inbox/example.task.yaml). Code: [src/config_loader.py](src/config_loader.py), [src/naming.py](src/naming.py), [src/inbox.py](src/inbox.py). The legacy flag-driven CLI is preserved verbatim — `process-inbox` is detected by a pre-pass in `main()` so the two surfaces don't share argparse state.
+
+**Legacy non-engineer config**: [settings.example.json](settings.example.json) bundles all common options into one JSON; users copy it to `settings.json` and run `python -m src.main --settings settings.json`. CLI flags override file values. The loader is in [src/settings_loader.py](src/settings_loader.py). Still supported but the inbox workflow above is preferred for new use cases.
 
 ## Common commands
 
 ```bash
-# Plan only (recommended first run)
+# Inbox workflow (recommended)
+python -m src.main process-inbox                # process every inbox/*.task.yaml
+python -m src.main process-inbox alpha          # process inbox/alpha.task.yaml only
+python -m src.main process-inbox --dry-run      # parse + report without running
+
+# Plan only (recommended first run, flag-driven)
 python -m src.main --input samples/sample.mp4 --output output/ \
     --detector audio_rms --candidates 6 --window 30 --debug
 
@@ -84,6 +91,10 @@ Each stage writes a JSON artefact (`video_info.json`, `hotspot_candidates.json`,
 
 ## Conventions worth knowing
 
+- **Naming engine is toggle + order, not template strings.** `naming.dir.include.<component> = true/false` plus `order: [...]` is the source of truth. Don't build template-string fallback paths — see the design log. Slugs are filesystem-safe but preserve Japanese / emoji unchanged.
+- **Task descriptors fail loud on unknown keys.** `streemer:` (typo) raises `TaskLoadError`, not silently dropped. Same logic for unknown config.yaml keys inside `include` blocks. Don't change to silent-skip; it makes typos undebuggable.
+- **bool / int are strictly separated in config validation.** Python's `isinstance(True, int) == True` would let `candidates: true` slip through as 1; `_require_int` / `_require_bool` in [src/config_loader.py](src/config_loader.py) reject the wrong type explicitly.
+- **`task` component in dir naming defaults ON.** Guarantees output dir uniqueness without `_n` suffix. Turning it off (for prettier names) falls back to the suffix conflict resolver — see the design log.
 - **No Python video bindings.** Subprocess to `ffmpeg`/`ffprobe`. Don't add `ffmpeg-python`/`av`/`moviepy`/`numpy` without discussing the design log in [docs/tasks.md](docs/tasks.md).
 - **`AudioRmsDetector` uses raw PCM, not ffmpeg `astats` parsing.** Astats text format is fragile across ffmpeg versions; PCM is rock-solid. See design log.
 - **Composite fusion: `weighted_sum` (default) or `rrf`.** `weighted_sum` does min-max normalise → weighted average and is intuitive but vulnerable to outlier scores. `rrf` discards score magnitudes and uses ranks, so one giant outlier can't dominate. Pick by detector mix, not just preference — see the design log in [docs/tasks.md](docs/tasks.md).

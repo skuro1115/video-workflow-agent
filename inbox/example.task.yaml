@@ -1,0 +1,63 @@
+# video-workflow task descriptor
+#
+# 1ファイル = 1ジョブ。inbox/ にこの形式の YAML を置くと、
+# `python -m src.main process-inbox` で順番に処理される。
+#
+# このファイル自体はサンプル（example.task.yaml）。実際に処理させたい時は
+# 別名でコピーして編集すること:
+#
+#     cp inbox/example.task.yaml inbox/2026-05-15-streamerA-funny.task.yaml
+#     # 編集して中身を実データに差し替え
+#     python -m src.main process-inbox
+#
+# ファイル名の stem (.task.yaml を除いた部分) はそのまま命名にも使われる
+# (config.yaml の naming.dir.include.task を true にしている場合)。
+
+# ----------------------------------------------------------------------------
+# 必須フィールド
+# ----------------------------------------------------------------------------
+
+# YouTube ライブアーカイブ / Twitch VOD の URL、またはローカルファイルパス。
+# URL なら scripts/fetch.py で自動的に動画 + チャットをダウンロードする。
+source: ./samples/sample.mp4
+# 例:
+# source: https://www.youtube.com/watch?v=xxxxxxxxxxx
+# source: https://www.twitch.tv/videos/123456789
+
+# ----------------------------------------------------------------------------
+# 命名コンポーネント (config.yaml の naming で on の項目で使われる)
+# ----------------------------------------------------------------------------
+
+streamer: streamerA           # 配信者の short name
+purpose:  funny               # 目的 short key (funny / analysis / matomeなど)
+title:    "サンプル動画"       # 原題。デフォルトではディレクトリ名に入らないが
+                              # clip ファイル名の slug には使われる
+
+# ----------------------------------------------------------------------------
+# 任意フィールド
+# ----------------------------------------------------------------------------
+
+# 配信日。省略すると実行日が使われる。ISO 8601 形式 (YYYY-MM-DD)。
+# date: 2026-05-15
+
+# ローカル source の場合、チャットログをここで指定できる。
+# URL source なら fetch が自動でダウンロードするので不要。
+# chat_log: ./samples/chat_log.example.json
+
+# ----------------------------------------------------------------------------
+# defaults の上書き (config.yaml の defaults.* と同じ key を書くと優先される)
+# 通常はコメントアウトしたまま全部 config.yaml の defaults に任せる
+# ----------------------------------------------------------------------------
+
+# detector: audio_rms        # このタスクだけ別の検出器で試す
+# candidates: 10              # 候補数を増やす
+# window: 45                  # 候補窓を 45 秒に
+# min_duration: 15
+# max_duration: 90
+# export_clips: false         # このタスクは clip plan までで止める
+# export_thumbnails: true
+# debug: true                 # 中間 JSON を全部書き出す
+# weights:                    # composite の重みをこのタスクだけ変える
+#   detectors:
+#     - {name: audio_rms, weight: 2.0}
+#   fusion: rrf

@@ -2,7 +2,24 @@
 
 進捗・残タスク・設計判断のログ。
 
-## 完了（2026-05-08 時点）
+## 完了（2026-05-16 時点）
+
+### 第6セッション（非エンジニア／AI駆動向け: inbox + config-first ワークフロー）
+
+- [x] [config.example.yaml](../config.example.yaml): 全設定を1つの YAML に集約（`paths` / `naming` / `defaults`）。コメント付きで非エンジニアが直接編集できる
+- [x] [src/config_loader.py](../src/config_loader.py): YAML パーサー + 階層的デフォルト解決 + 型検査。bool/int の取り違え（`True is int` 問題）をガード
+- [x] [src/naming.py](../src/naming.py): toggle 式 naming engine。`naming.dir.include.{date,streamer,purpose,title,detector,task}` を on/off → `order` で並べて連結。pure 関数のみ（衝突解決の `Path.exists` 以外 I/O 無し）
+- [x] naming のデフォルト: `title` off、`task`（task ファイル stem）on。`task: true` でディレクトリ衝突を構造的に防ぐ
+- [x] 衝突時のフォールバック: `on_conflict: suffix`（`_2`, `_3`, ...）と `error` の2モード。`task: false` で運用する時の保険
+- [x] [src/inbox.py](../src/inbox.py): `inbox/*.task.yaml` 発見 → defaults と task overrides を合成 → 既存パイプラインを driving → 成功は `archive/` / 失敗は `failed/` + `.error.log` に退避
+- [x] タスク記述形式（[inbox/example.task.yaml](../inbox/example.task.yaml)）: `source` 必須、その他は `defaults.*` の上書き。未知キー（例: typo `streemer`）は黙って捨てずに `TaskLoadError` で fail-loud
+- [x] `python -m src.main process-inbox [task_name] [--config <path>] [--dry-run]` サブコマンド配線。既存フラグ駆動 CLI と完全併存（pre-pass で分岐）
+- [x] clip ファイル名を `naming.clip` テンプレートで rename（`clip_01.mp4` → `01_<task-title-slug>.mp4`）。失敗は warning に留めて全体は止めない
+- [x] tests: [tests/test_config_loader.py](../tests/test_config_loader.py) 24件 / [tests/test_naming.py](../tests/test_naming.py) 31件 / [tests/test_inbox.py](../tests/test_inbox.py) 31件（合計 +86）。subprocess は全部 mock で network 無し
+- [x] [requirements.txt](../requirements.txt) に `PyYAML>=6.0` 追加。これで「コアは依存ゼロ」原則を緩めた — YAML を非エンジニア UX のために採用
+- [x] [.gitignore](../.gitignore) 更新: `inbox/*` を ignore（`example.task.yaml` のみ commit）、`archive/` `failed/` `_cache/` `config.yaml` も ignore
+
+### 既存（2026-05-08 〜 第5セッション）
 
 ### 第1セッション（MVP scaffold）
 - [x] リポジトリ構成決定（src / docs / output / samples）
@@ -131,6 +148,79 @@
 - [ ] SNS 投稿アダプタ（YouTube Shorts / X / TikTok）
 
 ## 設計判断ログ
+
+### 2026-05-16（第6セッション）
+
+**フラグ駆動 CLI ではなく config + inbox を主インターフェースに**
+- 候補:
+  1. 既存 CLI フラグの拡張（`--inbox`, `--streamer`, `--purpose`, ...）
+  2. config.yaml + 個別 task.yaml の2層構造（採用）
+  3. Web UI / デスクトップ GUI
+- 採用: (2)
+- 理由:
+  - (1) はフラグが爆発する。非エンジニアにとってフラグ列は学習コストが高く、AI Agent にとっても "正しい組み合わせ" を覚えるのが難しい
+  - (3) は投資が重い。常駐サーバ／フレームワークの選定／メンテが必要で personal project には過剰
+  - (2) は「規約に従う」モデル: `ls inbox/` で状態が分かる、Agent が JSON/YAML を生成すれば実行できる、ヒトが直接編集も可能
+- トレードオフ: 自由度（任意のフラグ組み合わせ）は下がるが、ユースケースは「同じ設定で複数動画を回す」が大半なので問題ない
+
+**Task ファイル = 1ファイル1ジョブ（sidecar ではなく）**
+- 候補:
+  1. `inbox/foo.mp4` + sidecar `inbox/foo.meta.yaml`
+  2. `inbox/foo.task.yaml` 1ファイルに source も含める（採用）
+  3. `inbox/` をプレーンな動画置き場にして DB / index ファイルで管理
+- 採用: (2)
+- 理由:
+  - (1) は2ファイルの対応関係を維持する規約が必要で、Agent が新規 task を作る時にミスしやすい
+  - (3) は別途 index ファイルが single point of failure になる。並列実行時の競合制御も自前で必要
+  - (2) は1ファイル = 1ジョブで自己完結。`ls inbox/*.task.yaml` がそのままタスク一覧。MCP 化する時に `create_task(content)` `list_tasks()` `process_task(name)` の3関数に綺麗にマップする
+
+**naming は flag toggle + order list、テンプレート文字列ではない**
+- 候補:
+  1. 完全テンプレート文字列（`"{date}_{streamer}_{purpose}/{n:02d}_{slug}"`）
+  2. flag toggle + 固定 order（採用）
+  3. ハードコード（拡張点無し）
+- 採用: (2)
+- 理由:
+  - (1) はフォーマット指定子の知識が要る。`{:02d}` `{:%Y-%m-%d}` を覚えるのは非エンジニアにつらい
+  - (3) はカスタマイズ要件（`title` を入れる／`task` を切る等）に対応できない
+  - (2) は `include: {title: false}` のような真偽値だけで使い分けられる。YAML/JSON で素直に表現でき、AI Agent も生成しやすい
+- 上級者向けに完全テンプレート文字列を後付けで追加する余地は残す（`template:` フィールドが存在すれば flag 系を override する形）
+
+**衝突回避: `task` コンポーネントをデフォルト on（C）+ `_n` suffix（A）併用**
+- 候補:
+  1. 自動 suffix のみ
+  2. ディレクトリ名に必ず task stem を入れる（採用 = C）
+  3. 衝突したら error で止める
+- 採用: (2) を主、(1) を `task: false` 時の保険として併用
+- 理由:
+  - task stem は inbox 内で必ずユニーク（ファイル名は unique）なので、ディレクトリ名に含めれば衝突は構造的に起きない
+  - ヒトが「pretty な名前」を優先したい時は `task: false` にできる。その時の保険として suffix を残す
+  - error モードは CI / バッチでの fail-fast 用途に残置
+- トレードオフ: デフォルト名がやや冗長（`2026-05-16_strA_funny_2026-05-16-strA-funny`）。代わりに `task: false` で短くできる選択肢を提供
+
+**YAML を採用、JSON / TOML ではなく**
+- 候補: YAML / TOML / JSON
+- 採用: YAML
+- 理由:
+  - JSON: コメント書けない、`"key":` の punctuation が冗長 → 非エンジニアが手で書くのつらい
+  - TOML: stdlib (`tomllib`) で読めるが書き込み lib が別途必要、ネスト深い設定（`naming.dir.include` 等）の表現が冗長
+  - YAML: コメント / 構造 / 簡潔さのバランスが良い。`PyYAML` 依存追加は小さく、枯れている。AI Agent もよく生成できる
+- 既存 `--settings settings.json` は破壊せず温存（互換性）。新規ユースケースは config.yaml に寄せる
+
+**bool / int の strict 型検査（True is int 問題への対処）**
+- Python では `isinstance(True, int)` が `True` を返すため、`candidates: true` のような YAML が誤って `1` として通ってしまう
+- 対策: `_require_int` / `_require_bool` を分離し、bool フィールドは int を拒否、int フィールドは bool を拒否
+- 理由: YAML の typo（`true` を間違って書いた等）を debug しにくい挙動で吸い込まないように。設定エラーは入口で fail-loud にする
+
+**Task の未知キーは黙ってスキップせず fail-loud**
+- 候補:
+  1. 未知キーは無視
+  2. 未知キーは warning
+  3. 未知キーは error（採用）
+- 採用: (3)
+- 理由:
+  - `streemer: foo` のような typo を黙って通すと、出力ディレクトリ名に streamer が入らないという不可解な挙動になる。原因究明が難しい
+  - 「forward compatibility のために unknown keys を許す」考え方もあるが、このスキーマは内部用で外部 API ではない。fail-loud のほうが debug 体験が良い
 
 ### 2026-05-13（第5セッション-c）
 
