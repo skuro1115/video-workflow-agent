@@ -1,0 +1,80 @@
+# video-workflow config (inbox workflow)
+#
+# このファイルをコピーして `config.yaml` を作り、好みに合わせて編集する。
+#
+#     cp config.example.yaml config.yaml
+#     python -m src.main process-inbox
+#
+# 各セクションは省略可能。省略したフィールドは src/config_loader.py の
+# DEFAULT_* に従う。最小例:
+#
+#     defaults:
+#       detector: audio_rms
+
+# --------------------------------------------------------------------------
+# パス設定（このファイルからの相対パスとして解釈される）
+# --------------------------------------------------------------------------
+paths:
+  inbox:   ./inbox      # ここに .task.yaml を投入する
+  output:  ./output     # 成果物はここに <task毎のディレクトリ>/ で書き出される
+  archive: ./archive    # 成功した .task.yaml はここに移動
+  failed:  ./failed     # 失敗した .task.yaml はここ + .error.log を sibling
+
+# --------------------------------------------------------------------------
+# 命名ルール
+#
+# 出力ディレクトリ名 = `order` を走査して `include=true` の component を
+# `separator` で連結。値が空のコンポーネントは黙ってスキップされる。
+# --------------------------------------------------------------------------
+naming:
+  dir:
+    include:
+      date:     true     # 配信日 or 実行日（task.yaml の `date:` で指定可）
+      streamer: true     # 配信者名（task.yaml の `streamer:`）
+      purpose:  true     # 目的 short key（`funny` / `analysis` など）
+      title:    false    # 原題。長くなりがちなのでデフォルト off
+      detector: false    # 検出器名（複数モード比較したい時だけ on）
+      task:     true     # .task.yaml の stem。on にしておくと衝突回避になる
+    order: [date, streamer, purpose, title, detector, task]
+    separator: "_"
+    date_format: "%Y-%m-%d"
+    slug_max_length: 40
+    # on_conflict は `task: false` のときだけ意味を持つ。`task: true` なら
+    # task stem は inbox 内でユニークなので衝突は起こらない。
+    on_conflict: suffix    # "suffix" (_2, _3, ...) または "error"
+
+  clip:
+    include:
+      index:     true     # 01, 02, ... (zero-padded)
+      slug:      true     # title から派生したスラッグ
+      detector:  false    # 検出器名（A/B比較したい時だけ）
+      timestamp: false    # 切り抜き開始時刻（00m45s 形式）
+    order: [index, slug, detector, timestamp]
+    separator: "_"
+    index_format: "{:02d}"   # 1桁ゼロ埋め2桁。{:03d}にすれば3桁になる
+
+# --------------------------------------------------------------------------
+# パイプラインのデフォルト値
+# .task.yaml で同名のフィールドを書けば、それがタスク個別に優先される
+# --------------------------------------------------------------------------
+defaults:
+  detector: composite        # even / audio_rms / comment_density / comment_reaction / composite
+  candidates: 6              # 何個の hotspot を拾うか
+  window: 30                 # 候補窓の長さ（秒）
+  min_duration: 10           # クリップ最短秒数
+  max_duration: 60           # クリップ最長秒数
+
+  export_clips: true         # ffmpeg で実エンコードまで走らせる
+  export_thumbnails: true    # 中点フレームの JPEG を <output>/thumbnails/ に
+  debug: false               # 検出器の中間 JSON を <output>/debug/ に書く
+
+  # composite 検出器の重み。fusion は weighted_sum か rrf。weight=0 で無効化。
+  weights:
+    detectors:
+      - {name: audio_rms,        weight: 1.0}
+      - {name: comment_density,  weight: 1.0}
+      - {name: comment_reaction, weight: 2.0}
+    fusion: weighted_sum
+    bin_seconds: 1.0
+    min_score: 0.0
+    rrf_k: 60

@@ -189,6 +189,140 @@
 
 ---
 
+## 入力 YAML（inbox ワークフロー）
+
+`process-inbox` で使う2種類の YAML。フル例は [config.example.yaml](../config.example.yaml) と [inbox/example.task.yaml](../inbox/example.task.yaml) を参照。源泉となる dataclass は [src/config_loader.py](../src/config_loader.py)。
+
+### `config.yaml`
+
+プロジェクト全体のデフォルト。`./config.yaml` が自動でロードされる（`--config <path>` で別パス指定可）。全セクション省略可能で、抜けたフィールドはハードコードのデフォルトで埋まる。
+
+```yaml
+paths:
+  inbox: ./inbox
+  output: ./output
+  archive: ./archive
+  failed: ./failed
+
+naming:
+  dir:
+    include: {date: true, streamer: true, purpose: true, title: false, detector: false, task: true}
+    order: [date, streamer, purpose, title, detector, task]
+    separator: "_"
+    date_format: "%Y-%m-%d"
+    slug_max_length: 40
+    on_conflict: suffix     # or "error"
+  clip:
+    include: {index: true, slug: true, detector: false, timestamp: false}
+    order: [index, slug, detector, timestamp]
+    separator: "_"
+    index_format: "{:02d}"
+
+defaults:
+  detector: composite
+  candidates: 6
+  window: 30
+  min_duration: 10
+  max_duration: 60
+  export_clips: true
+  export_thumbnails: true
+  debug: false
+  weights: { ... }          # weights.example.json と同形式
+```
+
+| セクション | 必須 | 説明 |
+| --- | --- | --- |
+| `paths.*` | × | `./inbox` などのデフォルト。configファイルからの相対パスとして解釈される |
+| `naming.dir.include.*` | × | 出力ディレクトリ名に入れるコンポーネントの on/off。全部 false は error |
+| `naming.dir.order` | × | コンポーネントの並び順。`include=true` のものだけが `separator` で連結される |
+| `naming.dir.on_conflict` | × | `task: true` なら衝突は起きないが、`task: false` 運用時の挙動: `suffix`（`_2`, `_3`, ...）か `error` |
+| `naming.clip.*` | × | クリップファイル名の構成。同じ toggle + order ルール |
+| `defaults.*` | × | パイプライン全体のデフォルト。task.yaml で同名フィールドを書けば上書きされる |
+
+`naming.dir.include` の各コンポーネントの値の出処:
+
+| component | 値の出処 |
+| --- | --- |
+| `date` | task.yaml の `date:` フィールド（YYYY-MM-DD）。省略時は実行日 |
+| `streamer` | task.yaml の `streamer:` |
+| `purpose` | task.yaml の `purpose:` |
+| `title` | task.yaml の `title:`（slug 化される） |
+| `detector` | task.yaml の `detector:` か config の `defaults.detector` |
+| `task` | `*.task.yaml` の stem（拡張子と `.task` を除いたファイル名） |
+
+`naming.clip.include` の値:
+
+| component | 値の出処 |
+| --- | --- |
+| `index` | 1始まりの連番（`index_format` で zero-pad）|
+| `slug` | task の `title` を filesystem-safe な slug にしたもの |
+| `detector` | 検出器名（A/B比較用） |
+| `timestamp` | クリップ開始時刻を `MMmSSs` / `HHhMMmSSs` 形式に整形 |
+
+### `inbox/<name>.task.yaml`
+
+1ファイル = 1ジョブ。ファイル名の stem (`.task.yaml` を除いた部分) は naming の `task` コンポーネントの値になり、`archive/` / `failed/` への移動先ファイル名にも使われる。
+
+```yaml
+source: https://www.youtube.com/watch?v=xxxxxxxxx   # URL or local path (required)
+streamer: streamerA
+purpose: funny
+title: "【神回】コラボでまさかの…"
+# date: 2026-05-15            # optional; defaults to today
+# chat_log: ./chat.json        # optional; URL sources auto-fetch chat
+
+# 任意 — defaults.* の上書き（書いたフィールドだけがタスク固有に効く）
+# detector: audio_rms
+# candidates: 10
+# window: 45
+# weights: { ... }
+```
+
+| フィールド | 必須 | 型 | 意味 |
+| --- | --- | --- | --- |
+| `source` | ○ | string | URL（`http://` / `https://`）か config からの相対 or 絶対パス |
+| `streamer` | × | string | naming.dir.include.streamer = true なら入る |
+| `purpose` | × | string | naming.dir.include.purpose = true なら入る |
+| `title` | × | string | dir に入れるかは toggle 次第。clip 側の slug にも使われる |
+| `date` | × | date | ISO 8601 (YYYY-MM-DD)。PyYAML が date 型として直接 parse する |
+| `chat_log` | × | string | ローカル動画のチャットログパス。URL source の時は不要 |
+| 上書き群 | × | varies | `detector` / `candidates` / `window` / `min_duration` / `max_duration` / `export_clips` / `export_thumbnails` / `debug` / `weights` — config.defaults と同 key、書いたものだけ上書き |
+
+未知キーは error（`streemer` のような typo を黙って吸い込まない）。
+
+### 出力レイアウト（inbox ワークフロー）
+
+成功時:
+
+```
+output/
+  2026-05-16_streamerA_funny_2026-05-16-streamerA-funny/   ← naming.dir で計算
+    video_info.json
+    hotspot_candidates.json
+    clip_plan.json
+    clip_export_result.json
+    thumbnail_export_result.json
+    run_timing.json
+    clips/
+      01_kamikai-collab.mp4       ← naming.clip で rename
+      02_kamikai-collab.mp4
+    thumbnails/
+      01_kamikai-collab.jpg
+      02_kamikai-collab.jpg
+archive/
+  2026-05-16-streamerA-funny.task.yaml   ← 元の task.yaml がここに移動
+```
+
+失敗時:
+
+```
+failed/
+  2026-05-16-streamerA-funny.task.yaml
+  2026-05-16-streamerA-funny.task.yaml.error.log   ← traceback
+```
+
+---
+
 ## 入力 JSON
 
 ### chat-log（`--chat-log <path>` で指定、`comment_density` / `comment_reaction` 検出器の入力）

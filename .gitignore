@@ -12,6 +12,18 @@ samples/*
 !samples/chat_log.example.json
 !samples/*.expected.json
 
+# Inbox workflow runtime state. We track example.task.yaml for docs but
+# ignore actual user tasks + the archive/failed/cache piles they produce.
+inbox/*
+!inbox/example.task.yaml
+!inbox/.gitkeep
+archive/
+failed/
+_cache/
+
+# Personal config — only the example is committed.
+config.yaml
+
 # OS / editor
 .DS_Store
 .idea/

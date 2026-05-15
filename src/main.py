@@ -3,7 +3,18 @@
 Modes
 -----
 
-1. **Full pipeline** (default)
+1. **Inbox workflow** (recommended for non-engineers and AI agents)
+   ::
+
+       python -m src.main process-inbox [task_name] [--config config.yaml] [--dry-run]
+
+   Reads ``config.yaml`` (defaults: ``./config.yaml``), processes every
+   ``*.task.yaml`` in the configured inbox directory, and writes results into
+   per-task directories under the configured output. Successful tasks are
+   archived; failed ones are moved aside with an error log. See
+   ``config.example.yaml`` and ``inbox/example.task.yaml`` for the schema.
+
+2. **Full pipeline** (flag-driven, for power users)
    ::
 
        python -m src.main --input samples/sample.mp4 --output output/
@@ -12,7 +23,7 @@ Modes
    into the output directory. Pass ``--export-clips`` to also encode each
    planned clip into ``<output>/clips/`` with ffmpeg.
 
-2. **From-plan re-export**
+3. **From-plan re-export**
    ::
 
        python -m src.main --input video.mp4 --output output/ \\
@@ -22,7 +33,7 @@ Modes
    only the export step. Useful when a human has reviewed and edited the plan
    before encoding.
 
-3. **List detectors**
+4. **List detectors**
    ::
 
        python -m src.main --list-detectors
@@ -411,7 +422,63 @@ def run(
                 pass  # best-effort — don't mask the original error
 
 
+def _main_inbox(argv: list[str]) -> int:
+    """Handle the ``process-inbox`` subcommand.
+
+    Kept structurally separate from the flag-driven pipeline path so the
+    existing CLI surface is preserved verbatim (no positional collisions, no
+    argparse rewrite). Discovered tasks are read from ``cfg.paths.inbox`` and
+    each is run through the regular pipeline before being archived.
+    """
+    from .config_loader import ConfigLoadError
+    from .inbox import load_config_or_default, process_inbox
+
+    p = argparse.ArgumentParser(
+        prog="python -m src.main process-inbox",
+        description=(
+            "Process *.task.yaml files in the configured inbox/. "
+            "Successful tasks move to archive/; failures move to failed/ "
+            "with an .error.log sibling."
+        ),
+    )
+    p.add_argument(
+        "task_name", nargs="?", default=None,
+        help="If given, process only the task with this stem "
+             "(matches `<stem>.task.yaml`).",
+    )
+    p.add_argument(
+        "--config", type=Path, default=None,
+        help="Path to config.yaml (default: ./config.yaml, else built-in defaults).",
+    )
+    p.add_argument(
+        "--dry-run", action="store_true",
+        help="Parse + report tasks but don't run the pipeline or move files.",
+    )
+    args = p.parse_args(argv)
+
+    try:
+        cfg = load_config_or_default(args.config)
+    except ConfigLoadError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 11
+
+    result = process_inbox(cfg, task_name=args.task_name, dry_run=args.dry_run)
+    print(
+        f"\nDone. total={result.total} succeeded={result.succeeded} "
+        f"failed={result.failed} skipped={result.skipped}"
+    )
+    # Exit non-zero when any task failed so CI / shell scripts can detect it.
+    return 0 if result.failed == 0 else 12
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Sub-command pre-pass: ``process-inbox`` short-circuits the legacy
+    # flag-driven CLI so the two surfaces don't share argparse state.
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "process-inbox":
+        return _main_inbox(argv[1:])
+
     args = parse_args(argv)
 
     if args.list_detectors:

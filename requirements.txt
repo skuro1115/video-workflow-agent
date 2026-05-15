@@ -1,10 +1,15 @@
 # Runtime deps.
 #
 # The core pipeline (probe → detect → plan → export) shells out to
-# `ffmpeg` / `ffprobe` and uses zero Python packages. The deps below are
-# only required by the optional `scripts/fetch.py` ingest step (URL →
-# video + chat JSON). The pipeline itself runs without them.
+# `ffmpeg` / `ffprobe` for the heavy lifting. The Python deps below are:
+#
+#   - PyYAML: required for the inbox workflow (config.yaml + *.task.yaml).
+#     Stdlib has no YAML reader, and YAML beats JSON for human-edited
+#     config (comments + less punctuation noise).
+#   - yt-dlp / chat-downloader: only for the optional URL ingest step
+#     (scripts/fetch.py). The pipeline itself runs without them.
 
+PyYAML>=6.0                # config.yaml + inbox/*.task.yaml
 yt-dlp>=2024.12.0          # YouTube / Twitch video + YouTube live-chat replay
 chat-downloader>=0.2.8     # Twitch VOD chat (yt-dlp does not extract it)
 
